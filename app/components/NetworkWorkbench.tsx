@@ -1,0 +1,756 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  type Flight,
+  type SimulationResult,
+  getActualDelaySeedMinutes,
+  simulateFlightDelay,
+  simulateGroundStop,
+} from "../lib/simulation";
+import {
+  type Airport,
+  type NetworkRoute,
+  NetworkMap,
+} from "./NetworkMap";
+
+type ManifestChunk = {
+  date: string;
+  carrier: string;
+  path: string;
+  flightCount: number;
+  routeCount: number;
+};
+
+type Manifest = {
+  schemaVersion: number;
+  generatedAt: string;
+  dataset: { sourceFile: string; year: number; month: number };
+  dates: string[];
+  carriers: string[];
+  availability: Record<string, string[]>;
+  chunks: ManifestChunk[];
+  totals: { flights: number; routes: number; airports: number };
+  metadata: {
+    airportCodeMatchRate: number;
+    coordinateMatchRate: number;
+    rotationLinkCount: number;
+  };
+};
+
+type AirportPayload = {
+  airports: Array<Airport & { latitude: number | null; longitude: number | null }>;
+};
+
+type ChunkPayload = {
+  date: string;
+  carrier: string;
+  flightFields?: string[];
+  flights: Array<Flight | unknown[]>;
+};
+
+type ScenarioMode = "flight" | "ground";
+type DelaySource = "planned" | "actual";
+
+const AIRLINE_NAMES: Record<string, string> = {
+  "9E": "Endeavor Air",
+  AA: "American Airlines",
+  AS: "Alaska Airlines",
+  B6: "JetBlue Airways",
+  DL: "Delta Air Lines",
+  F9: "Frontier Airlines",
+  G4: "Allegiant Air",
+  HA: "Hawaiian Airlines",
+  MQ: "Envoy Air",
+  NK: "Spirit Airlines",
+  OH: "PSA Airlines",
+  OO: "SkyWest Airlines",
+  UA: "United Airlines",
+  WN: "Southwest Airlines",
+  YX: "Republic Airways",
+};
+
+function airlineName(code: string) {
+  return AIRLINE_NAMES[code] ?? code;
+}
+
+function formatDate(date: string, compact = false) {
+  if (!date) return "";
+  const value = new Date(`${date}T12:00:00`);
+  return value.toLocaleDateString("en-US", compact
+    ? { month: "short", day: "numeric" }
+    : { weekday: "short", month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatTime(minutes: number | null | undefined) {
+  if (minutes == null || !Number.isFinite(minutes)) return "—";
+  const day = Math.floor(minutes / 1440);
+  const minuteOfDay = ((minutes % 1440) + 1440) % 1440;
+  const hours = Math.floor(minuteOfDay / 60);
+  const mins = minuteOfDay % 60;
+  const clock = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+  return day > 0 ? `${clock} +${day}` : clock;
+}
+
+function timeInputValue(minutes: number) {
+  const value = ((minutes % 1440) + 1440) % 1440;
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+function parseTimeInput(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function routeFromKey(key: string) {
+  const [origin, destination] = key.split("-");
+  return { origin, destination };
+}
+
+function plural(value: number, singular: string, pluralForm = `${singular}s`) {
+  return `${value.toLocaleString()} ${value === 1 ? singular : pluralForm}`;
+}
+
+function inflateFlights(payload: ChunkPayload): Flight[] {
+  if (!payload.flightFields) return payload.flights as Flight[];
+  return payload.flights.map((row) => {
+    if (!Array.isArray(row)) return row;
+    return Object.fromEntries(
+      payload.flightFields!.map((field, index) => [field, row[index]]),
+    ) as unknown as Flight;
+  });
+}
+
+export function NetworkWorkbench() {
+  const [manifest, setManifest] = useState<Manifest | null>(null);
+  const [airportPayload, setAirportPayload] = useState<AirportPayload | null>(null);
+  const [date, setDate] = useState("");
+  const [carrier, setCarrier] = useState("");
+  const [flights, setFlights] = useState<Flight[]>([]);
+  const [isChunkLoading, setIsChunkLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chunkError, setChunkError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+  const [scenarioMode, setScenarioMode] = useState<ScenarioMode>("flight");
+  const [selectedRouteKey, setSelectedRouteKey] = useState<string | null>(null);
+  const [selectedFlightId, setSelectedFlightId] = useState<string | null>(null);
+  const [delayMinutes, setDelayMinutes] = useState(60);
+  const [delaySource, setDelaySource] = useState<DelaySource>("planned");
+  const [groundAirport, setGroundAirport] = useState("");
+  const [groundStart, setGroundStart] = useState(9 * 60);
+  const [groundEnd, setGroundEnd] = useState(10 * 60 + 30);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.all([
+      fetch("/data/manifest.json", { signal: controller.signal }).then((response) => {
+        if (!response.ok) throw new Error("The BTS data index could not be loaded.");
+        return response.json() as Promise<Manifest>;
+      }),
+      fetch("/data/airports.json", { signal: controller.signal }).then((response) => {
+        if (!response.ok) throw new Error("The airport map could not be loaded.");
+        return response.json() as Promise<AirportPayload>;
+      }),
+    ])
+      .then(([nextManifest, nextAirports]) => {
+        setManifest(nextManifest);
+        setAirportPayload(nextAirports);
+        const preferredDate = nextManifest.dates[Math.floor(nextManifest.dates.length / 2)]
+          ?? nextManifest.dates[0];
+        const available = nextManifest.availability[preferredDate] ?? nextManifest.carriers;
+        const preferredCarrier = available.includes("AA") ? "AA" : available[0];
+        setIsChunkLoading(true);
+        setDate(preferredDate);
+        setCarrier(preferredCarrier);
+      })
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setError(cause instanceof Error ? cause.message : "The network data could not be loaded.");
+      });
+    return () => controller.abort();
+  }, []);
+
+  const availableCarriers = useMemo(() => {
+    if (!manifest || !date) return [];
+    return manifest.availability[date] ?? manifest.carriers;
+  }, [date, manifest]);
+
+  useEffect(() => {
+    if (!manifest || !date || !carrier || !availableCarriers.includes(carrier)) return;
+    const controller = new AbortController();
+    const chunk = manifest.chunks.find((item) => item.date === date && item.carrier === carrier);
+    const path = chunk?.path ?? `/data/days/${date}/${carrier}.json`;
+    fetch(path, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`No flights are available for ${carrier} on ${date}.`);
+        return response.json() as Promise<ChunkPayload>;
+      })
+      .then((payload) => {
+        setFlights(inflateFlights(payload));
+        setSelectedRouteKey(null);
+        setSelectedFlightId(null);
+        setDelayMinutes(60);
+        setDelaySource("planned");
+        setChunkError(null);
+        setError(null);
+      })
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setFlights([]);
+        setChunkError(cause instanceof Error ? cause.message : "This service day could not be loaded.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsChunkLoading(false);
+      });
+    return () => controller.abort();
+  }, [availableCarriers, carrier, date, manifest, retryToken]);
+
+  const airports = useMemo(() => {
+    const result = new Map<string, Airport>();
+    for (const airport of airportPayload?.airports ?? []) {
+      if (typeof airport.latitude !== "number" || typeof airport.longitude !== "number") continue;
+      result.set(airport.code, airport as Airport);
+    }
+    return result;
+  }, [airportPayload]);
+
+  const routes = useMemo(() => {
+    const aggregate = new Map<string, { flights: number; distance: number }>();
+    for (const flight of flights) {
+      const key = `${flight.origin}-${flight.destination}`;
+      const current = aggregate.get(key) ?? { flights: 0, distance: 0 };
+      current.flights += 1;
+      current.distance += flight.distance || 0;
+      aggregate.set(key, current);
+    }
+    return [...aggregate.entries()]
+      .map(([key, value]): NetworkRoute => {
+        const { origin, destination } = routeFromKey(key);
+        return {
+          key,
+          origin,
+          destination,
+          flights: value.flights,
+          distance: Math.round(value.distance / Math.max(1, value.flights)),
+        };
+      })
+      .sort((a, b) => b.flights - a.flights || a.key.localeCompare(b.key));
+  }, [flights]);
+
+  const routeFlights = useMemo(() => {
+    if (!selectedRouteKey) return [];
+    const { origin, destination } = routeFromKey(selectedRouteKey);
+    return flights
+      .filter((flight) => flight.origin === origin && flight.destination === destination)
+      .sort((a, b) => a.scheduledDeparture - b.scheduledDeparture || a.id.localeCompare(b.id));
+  }, [flights, selectedRouteKey]);
+
+  const selectedFlight = useMemo(() => {
+    const explicit = routeFlights.find(
+      (flight) => flight.id === selectedFlightId && !flight.cancelled && !flight.diverted,
+    );
+    return explicit ?? routeFlights.find((flight) => !flight.cancelled && !flight.diverted) ?? null;
+  }, [routeFlights, selectedFlightId]);
+
+  const airportTraffic = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const flight of flights) {
+      counts.set(flight.origin, (counts.get(flight.origin) ?? 0) + 1);
+      counts.set(flight.destination, (counts.get(flight.destination) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [flights]);
+
+  const effectiveGroundAirport = airportTraffic.some(([code]) => code === groundAirport)
+    ? groundAirport
+    : (airportTraffic[0]?.[0] ?? "");
+
+  const groundWindowValid = groundEnd > groundStart;
+  const simulation = useMemo<SimulationResult | null>(() => {
+    if (scenarioMode === "flight") {
+      if (!selectedFlight || delayMinutes <= 0) return null;
+      return simulateFlightDelay(flights, selectedFlight.id, delayMinutes, 35);
+    }
+    if (!effectiveGroundAirport || !groundWindowValid) return null;
+    return simulateGroundStop(flights, effectiveGroundAirport, groundStart, groundEnd, 35);
+  }, [delayMinutes, effectiveGroundAirport, flights, groundEnd, groundStart, groundWindowValid, scenarioMode, selectedFlight]);
+
+  const impactedRouteKeys = useMemo(
+    () => new Set(simulation?.delayedRouteKeys ?? []),
+    [simulation],
+  );
+  const activeAirportCount = useMemo(
+    () => new Set(flights.flatMap((flight) => [flight.origin, flight.destination])).size,
+    [flights],
+  );
+  const tailCount = useMemo(
+    () => new Set(flights.map((flight) => flight.tail).filter(Boolean)).size,
+    [flights],
+  );
+  const observedDelay = selectedFlight ? getActualDelaySeedMinutes(selectedFlight) : 0;
+  const datasetMonth = manifest
+    ? new Date(manifest.dataset.year, manifest.dataset.month - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" })
+    : "";
+
+  function selectRoute(route: NetworkRoute) {
+    setScenarioMode("flight");
+    setSelectedRouteKey(route.key);
+    setSelectedFlightId(null);
+    setDelayMinutes(60);
+    setDelaySource("planned");
+  }
+
+  function resetForChunkLoad() {
+    setFlights([]);
+    setSelectedRouteKey(null);
+    setSelectedFlightId(null);
+    setDelayMinutes(60);
+    setDelaySource("planned");
+    setChunkError(null);
+    setIsChunkLoading(true);
+  }
+
+  function changeDate(nextDate: string) {
+    const nextCarriers = manifest?.availability[nextDate] ?? [];
+    const nextCarrier = nextCarriers.includes(carrier) ? carrier : nextCarriers[0];
+    resetForChunkLoad();
+    setDate(nextDate);
+    setCarrier(nextCarrier ?? "");
+  }
+
+  function changeCarrier(nextCarrier: string) {
+    resetForChunkLoad();
+    setCarrier(nextCarrier);
+  }
+
+  function retryChunk() {
+    resetForChunkLoad();
+    setRetryToken((value) => value + 1);
+  }
+
+  function selectExactFlight(id: string) {
+    setSelectedFlightId(id);
+    setDelayMinutes(60);
+    setDelaySource("planned");
+  }
+
+  function chooseManualDelay(value: number) {
+    setDelayMinutes(value);
+    setDelaySource("planned");
+  }
+
+  function replayActualDelay() {
+    setDelayMinutes(observedDelay);
+    setDelaySource("actual");
+  }
+
+  if (error && !manifest) {
+    return (
+      <main className="error-screen">
+        <div className="error-card">
+          <div className="brand-mark" aria-hidden="true"><span /></div>
+          <strong>Turnline could not open the dataset</strong>
+          <span>{error}</span>
+          <button type="button" onClick={() => window.location.reload()}>Try again</button>
+        </div>
+      </main>
+    );
+  }
+
+  if (!manifest || !airportPayload || !date || !carrier) {
+    return (
+      <main className="loading-screen">
+        <div className="loading-card" role="status">
+          <div className="loading-orbit" aria-hidden="true" />
+          <strong>Building the service-day network</strong>
+          <span>Indexing routes, aircraft rotations, and airport positions.</span>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true"><span /></div>
+          <div className="brand-copy">
+            <strong>TURNLINE</strong>
+            <span>Network disruption simulator</span>
+          </div>
+        </div>
+
+        <div className="dataset-controls" aria-label="Network selection">
+          <div className="control-field">
+            <label htmlFor="network-date">Service date</label>
+            <select id="network-date" value={date} onChange={(event) => changeDate(event.target.value)}>
+              {manifest.dates.map((option) => (
+                <option key={option} value={option}>{formatDate(option, true)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="control-field">
+            <label htmlFor="network-carrier">Operating airline</label>
+            <select id="network-carrier" value={carrier} onChange={(event) => changeCarrier(event.target.value)}>
+              {availableCarriers.map((option) => (
+                <option key={option} value={option}>{option} · {airlineName(option)}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="source-badge">BTS on-time · {datasetMonth}</div>
+      </header>
+
+      <main className="workspace">
+        <section className={`map-stage${isChunkLoading ? " is-loading" : ""}`} aria-busy={isChunkLoading}>
+          <div className="map-heading">
+            <div>
+              <p className="eyebrow">{carrier} · {formatDate(date)}</p>
+              <h1>Domestic network</h1>
+              <p>Select a route, choose a specific departure, then introduce a delay to see where the aircraft carries it next.</p>
+            </div>
+            <div className="map-legend" aria-label="Map legend">
+              <span className="legend-item"><i className="legend-line" />Scheduled</span>
+              <span className="legend-item"><i className="legend-line selected" />Selected</span>
+              <span className="legend-item"><i className="legend-line impacted" />Delayed</span>
+            </div>
+          </div>
+
+          {isChunkLoading ? (
+            <div className="network-map network-state" role="status">
+              <div className="loading-orbit" aria-hidden="true" />
+              <strong>Loading {airlineName(carrier)} · {formatDate(date, true)}</strong>
+              <span>Preparing the service-day network.</span>
+            </div>
+          ) : chunkError ? (
+            <div className="network-map network-state" role="alert">
+              <strong>That service day could not be opened</strong>
+              <span>{chunkError}</span>
+              <button type="button" onClick={retryChunk}>Try again</button>
+            </div>
+          ) : (
+            <NetworkMap
+              airports={airports}
+              routes={routes}
+              selectedRouteKey={selectedRouteKey}
+              impactedRouteKeys={impactedRouteKeys}
+              onSelectRoute={selectRoute}
+            />
+          )}
+
+          <div className="network-metrics" aria-live="polite">
+            <div className="metric"><span>Scheduled flights</span><strong>{flights.length.toLocaleString()}</strong></div>
+            <div className="metric"><span>Active airports</span><strong>{activeAirportCount}</strong></div>
+            <div className="metric"><span>Aircraft tails</span><strong>{tailCount.toLocaleString()}</strong></div>
+            <div className="metric"><span>Scenario impact</span><strong className={simulation?.summary.affectedFlightCount ? "impact-value" : ""}>{simulation ? plural(simulation.summary.affectedFlightCount, "flight") : "None"}</strong></div>
+          </div>
+        </section>
+
+        <aside className="scenario-panel" aria-label="Disruption scenario">
+          <div className="scenario-panel-inner">
+            <div className="scenario-head">
+              <h2>Disruption lab</h2>
+              <p>Adjust one operational constraint. The network updates instantly.</p>
+              <div className="scenario-tabs" aria-label="Scenario type">
+                <button
+                  type="button"
+                  aria-pressed={scenarioMode === "flight"}
+                  className={scenarioMode === "flight" ? "active" : ""}
+                  onClick={() => setScenarioMode("flight")}
+                >Flight delay</button>
+                <button
+                  type="button"
+                  aria-pressed={scenarioMode === "ground"}
+                  className={scenarioMode === "ground" ? "active" : ""}
+                  onClick={() => setScenarioMode("ground")}
+                >Ground stop</button>
+              </div>
+            </div>
+
+            <div className="scenario-scroll">
+              {scenarioMode === "flight" ? (
+                <FlightDelayPanel
+                  routes={routes}
+                  selectedRouteKey={selectedRouteKey}
+                  routeFlights={routeFlights}
+                  selectedFlight={selectedFlight}
+                  delayMinutes={delayMinutes}
+                  delaySource={delaySource}
+                  observedDelay={observedDelay}
+                  simulation={simulation}
+                  onSelectRoute={selectRoute}
+                  onClearRoute={() => setSelectedRouteKey(null)}
+                  onSelectFlight={selectExactFlight}
+                  onDelayChange={chooseManualDelay}
+                  onReplayActual={replayActualDelay}
+                />
+              ) : (
+                <GroundStopPanel
+                  airportTraffic={airportTraffic}
+                  airports={airports}
+                  groundAirport={effectiveGroundAirport}
+                  groundStart={groundStart}
+                  groundEnd={groundEnd}
+                  groundWindowValid={groundWindowValid}
+                  simulation={simulation}
+                  onAirportChange={setGroundAirport}
+                  onStartChange={setGroundStart}
+                  onEndChange={setGroundEnd}
+                />
+              )}
+
+              <section className="panel-section">
+                <div className="section-label">Model scope</div>
+                <p className="method-note">
+                  Propagation follows the reported aircraft tail with a 35-minute minimum turn. It stops at cancellations, diversions, broken rotations, or the end of the selected service day. Crew, gate, passenger-connection, and aircraft-swap effects are not included.
+                </p>
+              </section>
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+type FlightDelayPanelProps = {
+  routes: NetworkRoute[];
+  selectedRouteKey: string | null;
+  routeFlights: Flight[];
+  selectedFlight: Flight | null;
+  delayMinutes: number;
+  delaySource: DelaySource;
+  observedDelay: number;
+  simulation: SimulationResult | null;
+  onSelectRoute: (route: NetworkRoute) => void;
+  onClearRoute: () => void;
+  onSelectFlight: (id: string) => void;
+  onDelayChange: (minutes: number) => void;
+  onReplayActual: () => void;
+};
+
+function FlightDelayPanel({
+  routes,
+  selectedRouteKey,
+  routeFlights,
+  selectedFlight,
+  delayMinutes,
+  delaySource,
+  observedDelay,
+  simulation,
+  onSelectRoute,
+  onClearRoute,
+  onSelectFlight,
+  onDelayChange,
+  onReplayActual,
+}: FlightDelayPanelProps) {
+  const selectedRoute = selectedRouteKey ? routeFromKey(selectedRouteKey) : null;
+  return (
+    <>
+      <section className="panel-section">
+        <div className="section-label"><span>1 · Choose route</span><span>{routes.length} routes</span></div>
+        {selectedRoute ? (
+          <div className="route-selection">
+            <div className="route-selection-main">
+              <div className="route-codes">
+                <span>{selectedRoute.origin}</span><span className="route-arrow">→</span><span>{selectedRoute.destination}</span>
+              </div>
+              <small>{plural(routeFlights.length, "departure")} on this service day</small>
+            </div>
+            <button type="button" className="clear-button" onClick={onClearRoute}>Change</button>
+          </div>
+        ) : (
+          <>
+            <div className="route-prompt">
+              <strong>Pick a line on the map</strong>
+              <p>Routes with multiple flights will let you choose the exact scheduled departure.</p>
+            </div>
+            <div className="popular-routes" aria-label="Busiest routes">
+              {routes.slice(0, 5).map((route) => (
+                <button key={route.key} type="button" className="route-shortcut" onClick={() => onSelectRoute(route)}>
+                  <span>{route.origin} → {route.destination}</span>
+                  <small>{plural(route.flights, "flight")}</small>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      {selectedRoute && (
+        <section className="panel-section">
+          <div className="section-label"><span>2 · Exact departure</span><span>Local time</span></div>
+          <div className="flight-list">
+            {routeFlights.map((flight) => {
+              const unavailable = flight.cancelled || flight.diverted;
+              const observed = getActualDelaySeedMinutes(flight);
+              return (
+                <button
+                  key={flight.id}
+                  type="button"
+                  className={`flight-option${selectedFlight?.id === flight.id ? " selected" : ""}`}
+                  aria-pressed={selectedFlight?.id === flight.id}
+                  disabled={unavailable}
+                  onClick={() => onSelectFlight(flight.id)}
+                >
+                  <span className="flight-time">{formatTime(flight.scheduledDeparture)}</span>
+                  <span className="flight-meta">
+                    <strong>Flight {flight.flightNumber}</strong>
+                    <span>{flight.tail || "Tail unavailable"} · {Math.round(flight.distance).toLocaleString()} mi</span>
+                  </span>
+                  <span className={`flight-status${observed > 0 ? " observed-delay" : ""}`}>
+                    {flight.cancelled ? "CANCELLED" : flight.diverted ? "DIVERTED" : observed > 0 ? `+${Math.round(observed)}m` : "ON TIME"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {selectedFlight && (
+        <section className="panel-section">
+          <div className="section-label"><span>3 · Introduce delay</span><span>{delaySource === "actual" ? "Recorded" : "Custom"}</span></div>
+          <div className="delay-control">
+            <div className="delay-readout"><strong>+{delayMinutes}m</strong><span>departure delay</span></div>
+            <input
+              type="range"
+              min="0"
+              max="360"
+              step="5"
+              value={delayMinutes}
+              aria-label="Departure delay in minutes"
+              onChange={(event) => onDelayChange(Number(event.target.value))}
+            />
+            <div className="range-labels"><span>0m</span><span>1h</span><span>3h</span><span>6h</span></div>
+            <div className="quick-delays">
+              {[30, 60, 90, 120].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={delaySource === "planned" && delayMinutes === value}
+                  className={delaySource === "planned" && delayMinutes === value ? "active" : ""}
+                  onClick={() => onDelayChange(value)}
+                >+{value}m</button>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            className={`actual-delay-button${delaySource === "actual" ? " active" : ""}`}
+            aria-pressed={delaySource === "actual"}
+            disabled={observedDelay <= 0}
+            onClick={onReplayActual}
+          >
+            {observedDelay > 0 ? `Replay recorded delay · +${Math.round(observedDelay)} minutes` : "No recorded departure delay for this flight"}
+          </button>
+        </section>
+      )}
+
+      {selectedFlight && (
+        <ImpactPanel simulation={simulation} emptyMessage={delayMinutes === 0 ? "Set a delay above zero to run the rotation." : "This delay is recovered before the next aircraft leg."} />
+      )}
+    </>
+  );
+}
+
+type GroundStopPanelProps = {
+  airportTraffic: [string, number][];
+  airports: Map<string, Airport>;
+  groundAirport: string;
+  groundStart: number;
+  groundEnd: number;
+  groundWindowValid: boolean;
+  simulation: SimulationResult | null;
+  onAirportChange: (code: string) => void;
+  onStartChange: (minutes: number) => void;
+  onEndChange: (minutes: number) => void;
+};
+
+function GroundStopPanel({
+  airportTraffic,
+  airports,
+  groundAirport,
+  groundStart,
+  groundEnd,
+  groundWindowValid,
+  simulation,
+  onAirportChange,
+  onStartChange,
+  onEndChange,
+}: GroundStopPanelProps) {
+  const airport = airports.get(groundAirport);
+  return (
+    <>
+      <section className="panel-section">
+        <div className="section-label"><span>Ground stop setup</span><span>Local time</span></div>
+        <div className="field-grid">
+          <div className="form-field full">
+            <label htmlFor="stop-airport">Airport</label>
+            <select id="stop-airport" value={groundAirport} onChange={(event) => onAirportChange(event.target.value)}>
+              {airportTraffic.map(([code, count]) => (
+                <option key={code} value={code}>{code} · {airports.get(code)?.city || airports.get(code)?.name || "Airport"} ({count})</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-field">
+            <label htmlFor="stop-start">Start</label>
+            <input id="stop-start" type="time" value={timeInputValue(groundStart)} onChange={(event) => onStartChange(parseTimeInput(event.target.value))} />
+          </div>
+          <div className="form-field">
+            <label htmlFor="stop-end">Release</label>
+            <input id="stop-end" type="time" value={timeInputValue(groundEnd)} onChange={(event) => onEndChange(parseTimeInput(event.target.value))} />
+          </div>
+        </div>
+        <p className="ground-stop-note">
+          Flights scheduled to depart {groundAirport || "the airport"} during this window are held until release. Their aircraft delays then continue through later legs.
+        </p>
+        {!groundWindowValid && <p className="method-note" style={{ marginTop: 9, color: "var(--red-soft)" }}>Release must be later than the start on the selected date.</p>}
+        {airport && <p className="method-note" style={{ marginTop: 9 }}>{airport.name} · {airport.city}{airport.state ? `, ${airport.state}` : ""}</p>}
+      </section>
+
+      <ImpactPanel simulation={simulation} emptyMessage={groundWindowValid ? "No scheduled departures fall inside this ground-stop window." : "Choose a valid same-day window to run the ground stop."} />
+    </>
+  );
+}
+
+function ImpactPanel({ simulation, emptyMessage }: { simulation: SimulationResult | null; emptyMessage: string }) {
+  const summary = simulation?.summary;
+  return (
+    <section className="panel-section">
+      <div className="section-label"><span>Network effect</span><span>{summary?.affectedFlightCount ? "Live" : "No ripple"}</span></div>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">
+        {summary?.affectedFlightCount
+          ? `${summary.affectedFlightCount} flights affected, ${summary.propagatedFlightCount} propagated, ${Math.round(summary.totalDelayMinutes)} total delay minutes.`
+          : emptyMessage}
+      </p>
+      {simulation && summary?.affectedFlightCount ? (
+        <>
+          <div className="impact-summary">
+            <div className="impact-card"><strong>{summary.affectedFlightCount}</strong><span>Flights</span></div>
+            <div className="impact-card"><strong>{summary.propagatedFlightCount}</strong><span>Propagated</span></div>
+            <div className="impact-card"><strong>{Math.round(summary.totalDelayMinutes)}</strong><span>Total min</span></div>
+          </div>
+          <div className="rotation-list" style={{ marginTop: 17 }}>
+            {simulation.affectedFlights.slice(0, 18).map((impact, index) => (
+              <div className="rotation-row" key={impact.flightId}>
+                <span className="rotation-index">{index + 1}</span>
+                <span className="rotation-flight">
+                  <strong>{impact.origin} → {impact.destination} · Flight {impact.flightNumber}</strong>
+                  <span>{formatTime(impact.scheduledDeparture)} · {impact.cause === "rotation" ? "aircraft rotation" : impact.cause === "ground-stop" ? "held at airport" : "selected flight"}</span>
+                </span>
+                <span className="rotation-delay">+{Math.round(impact.departureDelayMinutes)}m</span>
+              </div>
+            ))}
+          </div>
+          {simulation.affectedFlights.length > 18 && (
+            <p className="method-note">Plus {simulation.affectedFlights.length - 18} more affected flights. All delayed routes remain marked in red on the map.</p>
+          )}
+        </>
+      ) : (
+        <div className="empty-impact">{emptyMessage}</div>
+      )}
+    </section>
+  );
+}
