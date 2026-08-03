@@ -243,9 +243,45 @@ export function getRecordedDepartureObservation(
 }
 
 /**
+ * Rebuilds same-day aircraft links using only the visible continuity rule:
+ * adjacent same-tail flights connect when the previous destination equals the
+ * next origin. Existing links are cleared so legacy prepared chunks receive
+ * the same behavior without regenerating the source dataset.
+ */
+export function linkAdjacentTailFlightsByAirport(
+  flights: readonly Flight[],
+): Flight[] {
+  const linkedFlights = flights.map((flight) => ({
+    ...flight,
+    nextFlightId: null,
+  }));
+  const flightsByTail = new Map<string, Flight[]>();
+
+  for (const flight of linkedFlights) {
+    if (!flight.tail) continue;
+    const rotation = flightsByTail.get(flight.tail) ?? [];
+    rotation.push(flight);
+    flightsByTail.set(flight.tail, rotation);
+  }
+
+  for (const rotation of flightsByTail.values()) {
+    rotation.sort(compareFlights);
+    for (let index = 0; index < rotation.length - 1; index += 1) {
+      const current = rotation[index];
+      const next = rotation[index + 1];
+      if (current.destination === next.origin) {
+        current.nextFlightId = next.id;
+      }
+    }
+  }
+
+  return linkedFlights;
+}
+
+/**
  * Returns the selected aircraft's complete carrier-day schedule while keeping
  * the model's valid linked rotation separate from same-tail context after a
- * broken airport/timing link.
+ * broken airport link.
  */
 export function getAircraftDayRotation(
   flights: readonly Flight[],

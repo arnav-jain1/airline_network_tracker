@@ -7,6 +7,7 @@ import {
   getDelaySeverity,
   getActualDelaySeedMinutes,
   getRecordedDepartureObservation,
+  linkAdjacentTailFlightsByAirport,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../app/lib/simulation.ts";
@@ -175,6 +176,75 @@ test("recorded observations share replay statuses and raw-clock fallback", () =>
     })),
     { delayMinutes: 30, status: "delayed" },
   );
+});
+
+test("same-tail flights link by airport even when their schedule times overlap", () => {
+  const input = [
+    flight({
+      id: "first",
+      scheduledDeparture: 100,
+      scheduledArrival: 300,
+      destination: "DFW",
+      nextFlightId: "stale",
+    }),
+    flight({
+      id: "second",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 200,
+      nextFlightId: "stale",
+    }),
+    flight({
+      id: "mismatch",
+      origin: "SEA",
+      scheduledDeparture: 400,
+      nextFlightId: "stale",
+    }),
+  ];
+
+  const linked = linkAdjacentTailFlightsByAirport(input);
+
+  assert.equal(linked.find((item) => item.id === "first").nextFlightId, "second");
+  assert.equal(linked.find((item) => item.id === "second").nextFlightId, null);
+  assert.equal(linked.find((item) => item.id === "mismatch").nextFlightId, null);
+  assert.equal(input[0].nextFlightId, "stale", "The input must not be mutated");
+});
+
+test("airport linking sorts each tail independently", () => {
+  const linked = linkAdjacentTailFlightsByAirport([
+    flight({
+      id: "a2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 300,
+    }),
+    flight({
+      id: "b1",
+      tail: "N202AA",
+      origin: "SEA",
+      destination: "PDX",
+      scheduledDeparture: 100,
+    }),
+    flight({
+      id: "a1",
+      origin: "AUS",
+      destination: "DFW",
+      scheduledDeparture: 100,
+    }),
+    flight({
+      id: "b2",
+      tail: "N202AA",
+      origin: "PDX",
+      destination: "SFO",
+      scheduledDeparture: 200,
+    }),
+  ]);
+  const byId = new Map(linked.map((item) => [item.id, item]));
+
+  assert.equal(byId.get("a1").nextFlightId, "a2");
+  assert.equal(byId.get("b1").nextFlightId, "b2");
+  assert.equal(byId.get("a2").nextFlightId, null);
+  assert.equal(byId.get("b2").nextFlightId, null);
 });
 
 test("aircraft-day rotation keeps earlier and unlinked same-tail flights as context", () => {

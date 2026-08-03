@@ -372,28 +372,12 @@ export function NetworkMap({
     );
     const geographyPath = geoPath(projection);
     const compactInsets = size.width < 620;
-    // d3's composite U.S. projection places Alaska southwest by default. Give
-    // it a dedicated, responsive top-left inset so it reads as northwest while
-    // its airports and route endpoints continue to use the identical geometry.
+    const alaskaOffsetY = -Math.min(50, Math.round(projection.scale() * 0.05));
     const [projectionX, projectionY] = projection.translate();
     const alaskaProjection = geoAlbersUsa()
       .scale(projection.scale())
-      .translate([projectionX, projectionY])
+      .translate([projectionX, projectionY + alaskaOffsetY])
       .precision(projection.precision());
-    if (alaska) {
-      const unscaledBounds = geoPath(alaskaProjection).bounds(alaska);
-      const unscaledWidth = unscaledBounds[1][0] - unscaledBounds[0][0];
-      const targetWidth = Math.min(150, Math.max(56, size.width * 0.13));
-      if (unscaledWidth > 0) {
-        alaskaProjection.scale(projection.scale() * targetWidth / unscaledWidth);
-      }
-      const scaledBounds = geoPath(alaskaProjection).bounds(alaska);
-      const [alaskaX, alaskaY] = alaskaProjection.translate();
-      alaskaProjection.translate([
-        alaskaX + 12 - scaledBounds[0][0],
-        alaskaY + 20 - scaledBounds[0][1],
-      ]);
-    }
     const alaskaGeographyPath = geoPath(alaskaProjection);
     const caribbeanBox: InsetBox = compactInsets
       ? { x: size.width - 171, y: size.height - 88, width: 126, height: 59, label: "CARIBBEAN" }

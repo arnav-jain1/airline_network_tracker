@@ -476,19 +476,13 @@ function addRotationLinks(flights, diagnostics) {
       const next = rotation[index + 1];
       diagnostics.rotationCandidatePairCount += 1;
 
-      let normalizedArrival = current.scheduledArrival;
-      if (normalizedArrival < current.scheduledDeparture) normalizedArrival += 1440;
-
       const hasAirportContinuity = current.destination === next.origin;
-      const departsAfterArrival = next.scheduledDeparture > normalizedArrival;
 
-      if (hasAirportContinuity && departsAfterArrival) {
+      if (hasAirportContinuity) {
         current.nextFlightId = next.id;
         diagnostics.rotationLinkCount += 1;
-      } else if (!hasAirportContinuity) {
-        diagnostics.rotationAirportDiscontinuityCount += 1;
       } else {
-        diagnostics.rotationTimingConflictCount += 1;
+        diagnostics.rotationAirportDiscontinuityCount += 1;
       }
     }
   }
@@ -564,7 +558,6 @@ async function main() {
     rotationCandidatePairCount: 0,
     rotationLinkCount: 0,
     rotationAirportDiscontinuityCount: 0,
-    rotationTimingConflictCount: 0,
   };
   const unresolvedAirportIds = new Map();
   const usedAirports = new Map();

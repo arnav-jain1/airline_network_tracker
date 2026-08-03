@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   compareRecordedReplay,
+  linkAdjacentTailFlightsByAirport,
   simulateFlightDelay,
 } from "../app/lib/simulation.ts";
 
@@ -80,10 +81,31 @@ test("a representative chunk inflates into valid rotations and simulations", asy
   assert.ok(chunk.flights.length > 2_000);
   assert.ok(chunk.flights.every((row) => row.length === expectedFields.length));
 
-  const flights = inflateChunk(chunk);
+  const flights = linkAdjacentTailFlightsByAirport(inflateChunk(chunk));
   const byId = new Map(flights.map((flight) => [flight.id, flight]));
   const airports = new Map(airportPayload.airports.map((airport) => [airport.code, airport]));
   const linked = flights.filter((flight) => flight.nextFlightId);
+
+  const flightsByTail = new Map();
+  for (const flight of flights) {
+    if (!flight.tail) continue;
+    const rotation = flightsByTail.get(flight.tail) ?? [];
+    rotation.push(flight);
+    flightsByTail.set(flight.tail, rotation);
+  }
+  for (const rotation of flightsByTail.values()) {
+    rotation.sort((left, right) =>
+      left.scheduledDeparture - right.scheduledDeparture || left.id.localeCompare(right.id));
+    for (let index = 0; index < rotation.length - 1; index += 1) {
+      const current = rotation[index];
+      const next = rotation[index + 1];
+      assert.equal(
+        current.nextFlightId,
+        current.destination === next.origin ? next.id : null,
+        `Unexpected airport link from ${current.id} to ${next.id}`,
+      );
+    }
+  }
 
   assert.ok(linked.length > 1_000);
   for (const flight of linked.slice(0, 250)) {

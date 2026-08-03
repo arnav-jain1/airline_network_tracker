@@ -11,6 +11,7 @@ import {
   getActualDelaySeedMinutes,
   getDelaySeverity,
   getRecordedDepartureObservation,
+  linkAdjacentTailFlightsByAirport,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../lib/simulation";
@@ -164,13 +165,15 @@ function addMaximumRouteDelay(
 }
 
 function inflateFlights(payload: ChunkPayload): Flight[] {
-  if (!payload.flightFields) return payload.flights as Flight[];
-  return payload.flights.map((row) => {
-    if (!Array.isArray(row)) return row;
-    return Object.fromEntries(
-      payload.flightFields!.map((field, index) => [field, row[index]]),
-    ) as unknown as Flight;
-  });
+  const flights = payload.flightFields
+    ? payload.flights.map((row) => {
+        if (!Array.isArray(row)) return row;
+        return Object.fromEntries(
+          payload.flightFields!.map((field, index) => [field, row[index]]),
+        ) as unknown as Flight;
+      })
+    : payload.flights as Flight[];
+  return linkAdjacentTailFlightsByAirport(flights);
 }
 
 export function NetworkWorkbench() {
@@ -908,6 +911,14 @@ function AircraftDayTimeline({
           const impact = simulation?.impacts[flight.id] ?? null;
           const isRecovery = flight.id === recoveryFlight?.id;
           const modelStopped = stoppedFlightIds.has(flight.id);
+          const previousFlight = rotation.flights[index - 1] ?? null;
+          const notLinkedLabel = previousFlight?.cancelled
+            ? "Not linked · prior flight cancelled"
+            : previousFlight?.diverted
+              ? "Not linked · prior flight diverted"
+              : previousFlight && previousFlight.destination !== flight.origin
+                ? `Not linked · ${previousFlight.destination} ≠ ${flight.origin}`
+                : "Not linked after earlier airport gap";
           const modelLabel = beforeScenario
             ? "Before scenario"
             : impact
@@ -917,7 +928,7 @@ function AircraftDayTimeline({
               : modelStopped
                 ? "Model stops"
                 : !isLinked
-                  ? "Not linked to selected flight"
+                  ? notLinkedLabel
                   : isRecovery
                     ? "Recovered here"
                     : isSelected
@@ -978,7 +989,7 @@ function AircraftDayTimeline({
       </div>
       <p className="method-note aircraft-day-note">
         {rotation.tail
-          ? "Every flight shown has the same reported aircraft tail that day. The model carries delay only through flights whose airports and times form a continuous sequence. Later flights that cannot be reliably connected remain visible, but their delay is not modeled."
+          ? "Every flight shown has the same reported aircraft tail that day. Adjacent flights are linked when the previous destination matches the next origin; cancellations and diversions end the chain. Unlinked later flights remain visible, but their delay is not modeled."
           : "This flight has no reported aircraft tail, so other legs from its aircraft day cannot be identified."}
       </p>
     </section>
