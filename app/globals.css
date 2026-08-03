@@ -565,15 +565,6 @@ canvas:focus-visible {
 .map-zoom-row {
   display: grid;
   grid-template-columns: 44px 59px 44px;
-  border-bottom: 1px solid var(--line);
-}
-
-.map-pan-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 44px);
-  grid-template-rows: repeat(2, 44px);
-  justify-content: center;
-  background: rgba(9, 107, 159, 0.035);
 }
 
 .map-controls button {
@@ -591,26 +582,6 @@ canvas:focus-visible {
 
 .map-zoom-row button + button {
   border-left: 1px solid var(--line);
-}
-
-.map-pan-grid .pan-up {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.map-pan-grid .pan-left {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.map-pan-grid .pan-down {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.map-pan-grid .pan-right {
-  grid-column: 3;
-  grid-row: 2;
 }
 
 .map-controls button:hover:not(:disabled),

@@ -87,6 +87,15 @@ type AtlasObjects = Objects & {
 
 const topology = statesTopology as unknown as Topology<AtlasObjects>;
 const nation = feature(topology, topology.objects.nation);
+const states = feature(topology, topology.objects.states);
+if (states.type !== "FeatureCollection") {
+  throw new Error("Expected the US atlas states to be a feature collection.");
+}
+const alaska = states.features.find((state) => String(state.id) === "02");
+const statesWithoutAlaska = {
+  ...states,
+  features: states.features.filter((state) => state !== alaska),
+};
 const stateLines = mesh(
   topology,
   topology.objects.states,
@@ -374,11 +383,22 @@ export function NetworkMap({
       nation,
     );
     const path = geoPath(projection, context);
+    const compactInsets = size.width < 620;
+    const alaskaOffsetY = compactInsets ? -18 : -24;
 
     context.beginPath();
-    path(nation);
+    path(statesWithoutAlaska);
     context.fillStyle = "#f8fafc";
     context.fill();
+
+    if (alaska) {
+      context.save();
+      context.translate(0, alaskaOffsetY);
+      context.beginPath();
+      path(alaska);
+      context.fill();
+      context.restore();
+    }
 
     context.beginPath();
     path(stateLines);
@@ -389,10 +409,9 @@ export function NetworkMap({
     const hits: RouteHit[] = [];
     const projectedAirports = new Map<string, [number, number]>();
     const activeAirportCodes = new Set(routes.flatMap((route) => [route.origin, route.destination]));
-    const compactInsets = size.width < 620;
     const caribbeanBox: InsetBox = compactInsets
-      ? { x: size.width - 171, y: size.height - 112, width: 126, height: 59, label: "CARIBBEAN" }
-      : { x: size.width - 212, y: size.height - 132, width: 160, height: 76, label: "CARIBBEAN" };
+      ? { x: size.width - 171, y: size.height - 88, width: 126, height: 59, label: "CARIBBEAN" }
+      : { x: size.width - 212, y: size.height - 108, width: 160, height: 76, label: "CARIBBEAN" };
     const pacificBox: InsetBox = compactInsets
       ? { x: size.width - 108, y: size.height - 182, width: 63, height: 55, label: "PACIFIC" }
       : { x: size.width - 137, y: size.height - 219, width: 85, height: 67, label: "PACIFIC" };
@@ -400,7 +419,10 @@ export function NetworkMap({
     for (const [code, airport] of airports) {
       const point = projection([airport.longitude, airport.latitude]);
       if (point) {
-        projectedAirports.set(code, point as [number, number]);
+        projectedAirports.set(code, [
+          point[0],
+          point[1] + (airport.state === "AK" ? alaskaOffsetY : 0),
+        ]);
       } else if (activeAirportCodes.has(code)) {
         territoryAirports.push(airport);
       }
@@ -550,7 +572,7 @@ export function NetworkMap({
     for (const candidate of markerCandidates) {
       const centerIsAvailable = (x: number, y: number) => {
         const outsideViewport = x < 23 || x > size.width - 23 || y < 23 || y > size.height - 23;
-        const intersectsControls = x > size.width - 183 && y < 168;
+        const intersectsControls = x > size.width - 183 && y < 80;
         const overlapsMarker = markers.some((marker) =>
           Math.hypot(marker.x - x, marker.y - y) < 46);
         return !outsideViewport && !intersectsControls && !overlapsMarker;
@@ -844,8 +866,8 @@ export function NetworkMap({
         onKeyDown={handleKeyDown}
         tabIndex={0}
         aria-label={selectionMode === "airport"
-          ? "Interactive airline map. Scroll, pinch, or use the controls to zoom. Drag to pan, then choose a revealed airport marker for the ground stop."
-          : "Interactive airline route map. Scroll, pinch, or use the controls to zoom, drag to pan, and choose a route. Use the arrow keys and Enter to select routes."}
+          ? "Interactive airline map. Scroll, pinch, or use the controls to zoom. Drag or use Shift plus arrow keys to pan, then choose a revealed airport marker for the ground stop."
+          : "Interactive airline route map. Scroll, pinch, or use the controls to zoom; drag or use Shift plus arrow keys to pan; then choose a route. Use the arrow keys and Enter to select routes."}
         aria-describedby={routeStatusId}
       />
       <div className="airport-marker-layer">
@@ -907,7 +929,7 @@ export function NetworkMap({
           );
         })}
       </div>
-      <div className="map-controls" role="group" aria-label="Map navigation controls">
+      <div className="map-controls" role="group" aria-label="Map zoom controls">
         <div className="map-zoom-row">
           <button
             type="button"
@@ -931,40 +953,6 @@ export function NetworkMap({
             disabled={view.scale >= MAX_ZOOM - 0.01}
             onClick={() => zoomAt(size.width / 2, size.height / 2, view.scale * 1.45)}
           >+</button>
-        </div>
-        <div className="map-pan-grid" role="group" aria-label="Map pan controls">
-          <button
-            type="button"
-            className="pan-up"
-            aria-label="Pan map up"
-            aria-controls={mapCanvasId}
-            disabled={view.scale <= MIN_ZOOM + 0.01 || view.y >= -0.5}
-            onClick={() => panBy(0, 88)}
-          >↑</button>
-          <button
-            type="button"
-            className="pan-left"
-            aria-label="Pan map left"
-            aria-controls={mapCanvasId}
-            disabled={view.scale <= MIN_ZOOM + 0.01 || view.x >= -0.5}
-            onClick={() => panBy(88, 0)}
-          >←</button>
-          <button
-            type="button"
-            className="pan-down"
-            aria-label="Pan map down"
-            aria-controls={mapCanvasId}
-            disabled={view.scale <= MIN_ZOOM + 0.01 || view.y <= size.height * (1 - view.scale) + 0.5}
-            onClick={() => panBy(0, -88)}
-          >↓</button>
-          <button
-            type="button"
-            className="pan-right"
-            aria-label="Pan map right"
-            aria-controls={mapCanvasId}
-            disabled={view.scale <= MIN_ZOOM + 0.01 || view.x <= size.width * (1 - view.scale) + 0.5}
-            onClick={() => panBy(-88, 0)}
-          >→</button>
         </div>
       </div>
       {hoveredRoute && (
