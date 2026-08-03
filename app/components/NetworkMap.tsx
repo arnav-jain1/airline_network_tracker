@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { geoAlbersUsa, geoPath } from "d3-geo";
 import { feature, mesh } from "topojson-client";
 import type {
@@ -35,12 +43,36 @@ type RouteHit = {
 
 type InsetBox = { x: number; y: number; width: number; height: number; label: string };
 
+type ViewTransform = {
+  scale: number;
+  x: number;
+  y: number;
+};
+
+type AirportMarker = {
+  airport: Airport;
+  traffic: number;
+  x: number;
+  y: number;
+  size: number;
+  showLabel: boolean;
+  impacted: boolean;
+  selected: boolean;
+  focused: boolean;
+  leaderLength: number;
+  leaderAngle: number;
+};
+
 type NetworkMapProps = {
   airports: Map<string, Airport>;
   routes: NetworkRoute[];
   selectedRouteKey: string | null;
+  selectedAirportCode: string | null;
   impactedRouteKeys: Set<string>;
+  recordedRouteKeys: Set<string>;
+  selectionMode: "route" | "airport";
   onSelectRoute: (route: NetworkRoute) => void;
+  onSelectAirport: (airport: Airport) => void;
 };
 
 type AtlasObjects = Objects & {
@@ -55,6 +87,34 @@ const stateLines = mesh(
   topology.objects.states,
   (a, b) => a !== b,
 );
+
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 5;
+
+function clampView(
+  view: ViewTransform,
+  size: { width: number; height: number },
+): ViewTransform {
+  const scale = clamp(view.scale, MIN_ZOOM, MAX_ZOOM);
+  if (scale <= MIN_ZOOM) {
+    return { scale: MIN_ZOOM, x: 0, y: 0 };
+  }
+  return {
+    scale,
+    x: clamp(view.x, size.width * (1 - scale), 0),
+    y: clamp(view.y, size.height * (1 - scale), 0),
+  };
+}
+
+function screenPoint(
+  point: [number, number],
+  view: ViewTransform,
+): [number, number] {
+  return [
+    point[0] * view.scale + view.x,
+    point[1] * view.scale + view.y,
+  ];
+}
 
 function distanceToSegment(
   x: number,
@@ -102,6 +162,10 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function pluralFlights(value: number) {
+  return `${value.toLocaleString()} scheduled movement${value === 1 ? "" : "s"}`;
+}
+
 function territoryPosition(
   airport: Airport,
   caribbeanBox: InsetBox,
@@ -136,19 +200,61 @@ export function NetworkMap({
   airports,
   routes,
   selectedRouteKey,
+  selectedAirportCode,
   impactedRouteKeys,
+  recordedRouteKeys,
+  selectionMode,
   onSelectRoute,
+  onSelectAirport,
 }: NetworkMapProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hitsRef = useRef<RouteHit[]>([]);
+  const activePointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const gestureRef = useRef({
+    centerX: 0,
+    centerY: 0,
+    distance: 0,
+    movement: 0,
+  });
+  const suppressClickRef = useRef(false);
+  const viewRef = useRef<ViewTransform>({ scale: MIN_ZOOM, x: 0, y: 0 });
+  const viewFrameRef = useRef<number | null>(null);
   const routeStatusId = useId();
+  const mapCanvasId = useId();
   const [size, setSize] = useState({ width: 900, height: 590 });
+  const [view, setView] = useState<ViewTransform>({
+    scale: MIN_ZOOM,
+    x: 0,
+    y: 0,
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const [visibleAirportMarkers, setVisibleAirportMarkers] = useState<AirportMarker[]>([]);
+  const [focusedAirportCode, setFocusedAirportCode] = useState<string | null>(null);
   const [hoverState, setHoverState] = useState<{
     routes: NetworkRoute[];
     routeKey: string | null;
   }>({ routes, routeKey: null });
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
+
+  const commitView = useCallback((next: ViewTransform) => {
+    viewRef.current = next;
+    if (viewFrameRef.current != null) return;
+    viewFrameRef.current = window.requestAnimationFrame(() => {
+      viewFrameRef.current = null;
+      setView(viewRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => () => {
+    if (viewFrameRef.current != null) {
+      window.cancelAnimationFrame(viewFrameRef.current);
+    }
+  }, []);
 
   // Route arrays change with the selected dataset. Treat an earlier array's
   // hover as cleared immediately so its tooltip cannot survive a data swap.
@@ -170,20 +276,73 @@ export function NetworkMap({
   useEffect(() => {
     if (!shellRef.current) return;
     const observer = new ResizeObserver(([entry]) => {
+      if ((document.activeElement as Element | null)?.closest(".airport-marker")) {
+        canvasRef.current?.focus({ preventScroll: true });
+      }
       const width = Math.max(320, Math.floor(entry.contentRect.width));
       const height = Math.max(410, Math.floor(entry.contentRect.height));
-      setSize({ width, height });
+      const nextSize = { width, height };
+      setSize(nextSize);
+      setView((current) => {
+        const next = clampView(current, nextSize);
+        viewRef.current = next;
+        return next;
+      });
     });
     observer.observe(shellRef.current);
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if ((event.target as Element | null)?.closest(".map-controls")) return;
+      const current = viewRef.current;
+      const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 16
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? size.height
+          : 1;
+      const nextScale = clamp(
+        current.scale * Math.exp(-event.deltaY * unit * 0.0015),
+        MIN_ZOOM,
+        MAX_ZOOM,
+      );
+      if (Math.abs(nextScale - current.scale) < 0.001) return;
+
+      event.preventDefault();
+      if ((document.activeElement as Element | null)?.closest(".airport-marker")) {
+        canvasRef.current?.focus({ preventScroll: true });
+      }
+      setHoverState((currentHover) => currentHover.routeKey === null
+        ? currentHover
+        : { ...currentHover, routeKey: null });
+      const rect = shell.getBoundingClientRect();
+      const anchorX = event.clientX - rect.left;
+      const anchorY = event.clientY - rect.top;
+      const ratio = nextScale / current.scale;
+      const next = clampView({
+        scale: nextScale,
+        x: anchorX - (anchorX - current.x) * ratio,
+        y: anchorY - (anchorY - current.y) * ratio,
+      }, size);
+      commitView(next);
+    };
+
+    shell.addEventListener("wheel", handleWheel, { passive: false });
+    return () => shell.removeEventListener("wheel", handleWheel);
+  }, [commitView, size]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ratio = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = size.width * ratio;
-    canvas.height = size.height * ratio;
+    const pixelWidth = Math.round(size.width * ratio);
+    const pixelHeight = Math.round(size.height * ratio);
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
 
@@ -191,6 +350,9 @@ export function NetworkMap({
     if (!context) return;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, size.width, size.height);
+    context.save();
+    context.translate(view.x, view.y);
+    context.scale(view.scale, view.scale);
 
     const projection = geoAlbersUsa().fitExtent(
       [[34, 34], [size.width - 36, size.height - 38]],
@@ -206,7 +368,7 @@ export function NetworkMap({
     context.beginPath();
     path(stateLines);
     context.strokeStyle = "rgba(164, 188, 218, 0.14)";
-    context.lineWidth = 0.75;
+    context.lineWidth = 0.75 / view.scale;
     context.stroke();
 
     const hits: RouteHit[] = [];
@@ -243,22 +405,26 @@ export function NetworkMap({
       for (const box of usedBoxes) {
         context.fillStyle = "rgba(8, 18, 33, 0.78)";
         context.strokeStyle = "rgba(164, 188, 218, 0.2)";
-        context.lineWidth = 0.75;
+        context.lineWidth = 0.75 / view.scale;
         context.beginPath();
         context.roundRect(box.x, box.y, box.width, box.height, 7);
         context.fill();
         context.stroke();
         context.fillStyle = "rgba(164, 188, 218, 0.55)";
-        context.font = "600 8px monospace";
+        context.font = `600 ${8 / view.scale}px monospace`;
         context.textAlign = "left";
         context.textBaseline = "top";
-        context.fillText(box.label, box.x + 8, box.y + 6);
+        context.fillText(
+          box.label,
+          box.x + 8 / view.scale,
+          box.y + 6 / view.scale,
+        );
       }
     }
 
     const sortedRoutes = [...routes].sort((a, b) => {
-      const aImportant = impactedRouteKeys.has(a.key) || a.key === selectedRouteKey;
-      const bImportant = impactedRouteKeys.has(b.key) || b.key === selectedRouteKey;
+      const aImportant = impactedRouteKeys.has(a.key) || recordedRouteKeys.has(a.key) || a.key === selectedRouteKey;
+      const bImportant = impactedRouteKeys.has(b.key) || recordedRouteKeys.has(b.key) || b.key === selectedRouteKey;
       return Number(aImportant) - Number(bImportant) || a.flights - b.flights;
     });
 
@@ -268,6 +434,7 @@ export function NetworkMap({
       if (!origin || !destination) continue;
       const points = routeCurve(origin, destination);
       const impacted = impactedRouteKeys.has(route.key);
+      const recorded = recordedRouteKeys.has(route.key);
       const selected = route.key === selectedRouteKey;
       const isHovered = hoveredRouteKey === route.key;
 
@@ -283,13 +450,21 @@ export function NetworkMap({
           : isHovered
             ? "rgba(175, 228, 255, 0.96)"
             : "rgba(86, 172, 233, 0.34)";
-      context.lineWidth = impacted
+      context.lineWidth = (impacted
         ? 2.45
         : selected || isHovered
           ? 2.1
-          : Math.min(1.55, 0.4 + Math.sqrt(route.flights) * 0.16);
+          : Math.min(1.55, 0.4 + Math.sqrt(route.flights) * 0.16)) / view.scale;
       context.stroke();
-      hits.push({ route, points });
+      if (recorded) {
+        context.save();
+        context.setLineDash([5.5 / view.scale, 4 / view.scale]);
+        context.strokeStyle = "rgba(246, 201, 107, 0.98)";
+        context.lineWidth = 1.75 / view.scale;
+        context.stroke();
+        context.restore();
+      }
+      hits.push({ route, points: points.map((point) => screenPoint(point, view)) });
     }
 
     const impactedAirports = new Set<string>();
@@ -302,41 +477,98 @@ export function NetworkMap({
 
     const activeAirports = [...airportTraffic.entries()]
       .filter(([code]) => projectedAirports.has(code))
-      .sort((a, b) => a[1] - b[1]);
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     const maxTraffic = Math.max(1, ...activeAirports.map(([, count]) => count));
-    for (const [code, count] of activeAirports) {
-      const point = projectedAirports.get(code)!;
-      const radius = 1.6 + Math.sqrt(count / maxTraffic) * 4;
-      if (impactedAirports.has(code)) {
-        context.beginPath();
-        context.arc(point[0], point[1], radius + 4.5, 0, Math.PI * 2);
-        context.strokeStyle = "rgba(255, 88, 82, 0.28)";
-        context.lineWidth = 2;
-        context.stroke();
+    const markerCandidates: AirportMarker[] = [];
+
+    activeAirports.forEach(([code, count]) => {
+      const airport = airports.get(code);
+      const point = projectedAirports.get(code);
+      if (!airport || !point) return;
+      const impacted = impactedAirports.has(code);
+      const selected = code === selectedAirportCode;
+      const focused = code === focusedAirportCode;
+      const importance = Math.sqrt(count / maxTraffic);
+      const revealAt = MIN_ZOOM + (1 - importance) * 3.6;
+      const labelAt = Math.min(MAX_ZOOM, revealAt + 0.25);
+      if (!impacted && !selected && !focused && view.scale + 0.001 < revealAt) return;
+
+      const [x, y] = screenPoint(point, view);
+      if (x < -90 || x > size.width + 90 || y < -90 || y > size.height + 90) {
+        return;
       }
-      context.beginPath();
-      context.arc(point[0], point[1], radius, 0, Math.PI * 2);
-      context.fillStyle = impactedAirports.has(code) ? "#ff625a" : "#d6eeff";
-      context.fill();
-      context.strokeStyle = "rgba(5, 13, 26, 0.8)";
-      context.lineWidth = 1;
-      context.stroke();
+      markerCandidates.push({
+        airport,
+        traffic: count,
+        x,
+        y,
+        size: 5 + importance * 7,
+        showLabel: impacted || selected || focused || view.scale + 0.001 >= labelAt,
+        impacted,
+        selected,
+        focused,
+        leaderLength: 0,
+        leaderAngle: 0,
+      });
+    });
+
+    markerCandidates.sort((a, b) =>
+      Number(b.selected) - Number(a.selected)
+      || Number(b.impacted) - Number(a.impacted)
+      || b.traffic - a.traffic
+      || a.airport.code.localeCompare(b.airport.code));
+    const markers: AirportMarker[] = [];
+    for (const candidate of markerCandidates) {
+      const centerIsAvailable = (x: number, y: number) => {
+        const outsideViewport = x < 23 || x > size.width - 23 || y < 23 || y > size.height - 23;
+        const intersectsControls = x > size.width - 183 && y < 168;
+        const overlapsMarker = markers.some((marker) =>
+          Math.hypot(marker.x - x, marker.y - y) < 46);
+        return !outsideViewport && !intersectsControls && !overlapsMarker;
+      };
+
+      let markerX = candidate.x;
+      let markerY = candidate.y;
+      if (!centerIsAvailable(markerX, markerY)) {
+        const codeSeed = [...candidate.airport.code]
+          .reduce((sum, character) => sum + character.charCodeAt(0), 0);
+        let placed = false;
+        for (let ring = 0; ring < 4 && !placed; ring += 1) {
+          const radius = 48 + ring * 22;
+          const positions = 8 + ring * 4;
+          for (let step = 0; step < positions; step += 1) {
+            const angle = ((codeSeed * 47) % 360) * Math.PI / 180
+              + (step / positions) * Math.PI * 2;
+            const nextX = candidate.x + Math.cos(angle) * radius;
+            const nextY = candidate.y + Math.sin(angle) * radius;
+            if (!centerIsAvailable(nextX, nextY)) continue;
+            markerX = nextX;
+            markerY = nextY;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) continue;
+      }
+
+      const leaderLength = Math.hypot(candidate.x - markerX, candidate.y - markerY);
+      markers.push({
+        ...candidate,
+        x: markerX,
+        y: markerY,
+        showLabel: candidate.showLabel || leaderLength > 1,
+        leaderLength,
+        leaderAngle: Math.atan2(
+          candidate.y - markerY,
+          candidate.x - markerX,
+        ) * 180 / Math.PI,
+      });
     }
 
-    context.font = "600 10px var(--font-geist-mono), monospace";
-    context.textAlign = "center";
-    context.textBaseline = "bottom";
-    const labelCount = size.width < 620 ? 6 : 11;
-    for (const [code] of [...activeAirports].sort((a, b) => b[1] - a[1]).slice(0, labelCount)) {
-      const point = projectedAirports.get(code)!;
-      const metric = context.measureText(code);
-      context.fillStyle = "rgba(7, 14, 27, 0.76)";
-      context.fillRect(point[0] - metric.width / 2 - 3, point[1] - 20, metric.width + 6, 13);
-      context.fillStyle = "rgba(218, 237, 250, 0.92)";
-      context.fillText(code, point[0], point[1] - 8);
-    }
+    context.restore();
     hitsRef.current = hits;
-  }, [airports, airportTraffic, hoveredRouteKey, impactedRouteKeys, routes, selectedRouteKey, size]);
+    setVisibleAirportMarkers(markers);
+  }, [airports, airportTraffic, focusedAirportCode, hoveredRouteKey, impactedRouteKeys, recordedRouteKeys, routes, selectedAirportCode, selectedRouteKey, size, view]);
 
   function updateHoveredRoute(routeKey: string | null) {
     setHoverState((current) => {
@@ -363,15 +595,158 @@ export function NetworkMap({
     return best;
   }
 
-  function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setPointer((current) => current.x === x && current.y === y ? current : { x, y });
-    updateHoveredRoute(locateRoute(x, y)?.route.key ?? null);
+  function updateView(
+    updater: (current: ViewTransform) => ViewTransform,
+  ) {
+    if ((document.activeElement as Element | null)?.closest(".airport-marker")) {
+      canvasRef.current?.focus({ preventScroll: true });
+    }
+    updateHoveredRoute(null);
+    commitView(clampView(updater(viewRef.current), size));
   }
 
-  function handleClick(event: React.MouseEvent<HTMLCanvasElement>) {
+  function zoomAt(x: number, y: number, requestedScale: number) {
+    updateView((current) => {
+      const nextScale = clamp(requestedScale, MIN_ZOOM, MAX_ZOOM);
+      const ratio = nextScale / current.scale;
+      return {
+        scale: nextScale,
+        x: x - (x - current.x) * ratio,
+        y: y - (y - current.y) * ratio,
+      };
+    });
+  }
+
+  function panBy(x: number, y: number) {
+    updateView((current) => ({
+      ...current,
+      x: current.x + x,
+      y: current.y + y,
+    }));
+  }
+
+  function pointerPosition(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  }
+
+  function gestureSnapshot() {
+    const points = [...activePointersRef.current.values()];
+    const centerX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length);
+    const centerY = points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length);
+    const distance = points.length >= 2
+      ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)
+      : 0;
+    return { centerX, centerY, distance };
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if ((event.target as Element | null)?.closest(".map-controls")) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const point = pointerPosition(event);
+    activePointersRef.current.set(event.pointerId, point);
+    const snapshot = gestureSnapshot();
+    gestureRef.current = {
+      ...snapshot,
+      movement: activePointersRef.current.size === 1
+        ? 0
+        : gestureRef.current.movement,
+    };
+    if (activePointersRef.current.size === 1) {
+      suppressClickRef.current = false;
+    }
+    setIsDragging(true);
+    updateHoveredRoute(null);
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const { x, y } = pointerPosition(event);
+    if (activePointersRef.current.has(event.pointerId)) {
+      activePointersRef.current.set(event.pointerId, { x, y });
+      const snapshot = gestureSnapshot();
+      const previous = gestureRef.current;
+      const movement = Math.hypot(
+        snapshot.centerX - previous.centerX,
+        snapshot.centerY - previous.centerY,
+      ) + Math.abs(snapshot.distance - previous.distance);
+
+      if (
+        activePointersRef.current.size >= 2
+        && previous.distance > 0
+        && snapshot.distance > 0
+      ) {
+        updateView((current) => {
+          const nextScale = clamp(
+            current.scale * (snapshot.distance / previous.distance),
+            MIN_ZOOM,
+            MAX_ZOOM,
+          );
+          const baseX = (previous.centerX - current.x) / current.scale;
+          const baseY = (previous.centerY - current.y) / current.scale;
+          return {
+            scale: nextScale,
+            x: snapshot.centerX - baseX * nextScale,
+            y: snapshot.centerY - baseY * nextScale,
+          };
+        });
+      } else {
+        panBy(
+          snapshot.centerX - previous.centerX,
+          snapshot.centerY - previous.centerY,
+        );
+      }
+
+      gestureRef.current = {
+        ...snapshot,
+        movement: previous.movement + movement,
+      };
+      if (gestureRef.current.movement > 4) {
+        suppressClickRef.current = true;
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
+      }
+      updateHoveredRoute(null);
+      return;
+    }
+
+    setPointer((current) => current.x === x && current.y === y ? current : { x, y });
+    const overOverlay = (event.target as Element | null)?.closest(".airport-marker, .map-controls");
+    updateHoveredRoute(overOverlay ? null : locateRoute(x, y)?.route.key ?? null);
+  }
+
+  function handlePointerEnd(event: React.PointerEvent<HTMLDivElement>) {
+    activePointersRef.current.delete(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (activePointersRef.current.size === 0) {
+      setIsDragging(false);
+      if (suppressClickRef.current) {
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }
+      return;
+    }
+    const snapshot = gestureSnapshot();
+    gestureRef.current = {
+      ...snapshot,
+      movement: gestureRef.current.movement,
+    };
+  }
+
+  function handleClick(event: React.MouseEvent<HTMLDivElement>) {
+    if ((event.target as Element | null)?.closest(".map-controls, .airport-marker")) {
+      return;
+    }
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -381,6 +756,29 @@ export function NetworkMap({
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLCanvasElement>) {
+    if (["+", "=", "-", "_", "0"].includes(event.key)) {
+      event.preventDefault();
+      if (event.key === "0") {
+        updateView(() => ({ scale: MIN_ZOOM, x: 0, y: 0 }));
+      } else {
+        zoomAt(
+          size.width / 2,
+          size.height / 2,
+          viewRef.current.scale * (event.key === "+" || event.key === "=" ? 1.35 : 1 / 1.35),
+        );
+      }
+      return;
+    }
+    if (event.shiftKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      const distance = 72;
+      panBy(
+        event.key === "ArrowLeft" ? distance : event.key === "ArrowRight" ? -distance : 0,
+        event.key === "ArrowUp" ? distance : event.key === "ArrowDown" ? -distance : 0,
+      );
+      return;
+    }
+    if (selectionMode === "airport") return;
     if (!["ArrowRight", "ArrowLeft", "Enter", " "].includes(event.key)) return;
     event.preventDefault();
     const routesByTraffic = [...routes].sort((a, b) => b.flights - a.flights);
@@ -399,17 +797,144 @@ export function NetworkMap({
   }
 
   return (
-    <div className="network-map" ref={shellRef}>
+    <div
+      className={`network-map${isDragging ? " is-dragging" : ""}`}
+      ref={shellRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
+      onPointerLeave={() => {
+        if (activePointersRef.current.size === 0) updateHoveredRoute(null);
+      }}
+      onClick={handleClick}
+    >
       <canvas
+        id={mapCanvasId}
         ref={canvasRef}
-        onPointerMove={handlePointerMove}
-        onPointerLeave={() => updateHoveredRoute(null)}
-        onClick={handleClick}
         onKeyDown={handleKeyDown}
         tabIndex={0}
-        aria-label="Interactive airline route map. Use the pointer to choose a route, or the arrow keys and Enter."
+        aria-label={selectionMode === "airport"
+          ? "Interactive airline map. Scroll, pinch, or use the controls to zoom. Drag to pan, then choose a revealed airport marker for the ground stop."
+          : "Interactive airline route map. Scroll, pinch, or use the controls to zoom, drag to pan, and choose a route. Use the arrow keys and Enter to select routes."}
         aria-describedby={routeStatusId}
       />
+      <div className="airport-marker-layer">
+        {visibleAirportMarkers.map((marker) => {
+          const markerClass = [
+            "airport-marker",
+            marker.showLabel ? "show-label" : "",
+            marker.impacted ? "impacted" : "",
+            marker.selected ? "selected" : "",
+            marker.leaderLength > 1 ? "displaced" : "",
+            selectionMode === "airport" ? "selectable" : "",
+          ].filter(Boolean).join(" ");
+          const markerStyle = {
+            left: marker.x,
+            top: marker.y,
+            "--airport-size": `${marker.size}px`,
+            "--leader-length": `${marker.leaderLength}px`,
+            "--leader-angle": `${marker.leaderAngle}deg`,
+          } as CSSProperties;
+          const detail = `${marker.airport.code} — ${marker.airport.name}, ${marker.traffic} scheduled carrier-day movements`;
+
+          return selectionMode === "airport" ? (
+            <button
+              type="button"
+              key={marker.airport.code}
+              className={markerClass}
+              style={markerStyle}
+              aria-label={`${detail}. Select for ground stop.`}
+              aria-pressed={marker.selected}
+              onFocus={() => setFocusedAirportCode(marker.airport.code)}
+              onBlur={() => setFocusedAirportCode((current) =>
+                current === marker.airport.code ? null : current)}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (suppressClickRef.current) return;
+                onSelectAirport(marker.airport);
+              }}
+            >
+              <span className="airport-dot" aria-hidden="true" />
+              <span className="airport-code" aria-hidden="true">{marker.airport.code}</span>
+              <span className="airport-hover-card" aria-hidden="true">
+                <strong>{marker.airport.code} · {marker.airport.city || marker.airport.name}</strong>
+                <small>{pluralFlights(marker.traffic)} · select ground stop</small>
+              </span>
+            </button>
+          ) : (
+            <span
+              key={marker.airport.code}
+              className={markerClass}
+              style={markerStyle}
+              aria-hidden="true"
+            >
+              <span className="airport-dot" />
+              <span className="airport-code">{marker.airport.code}</span>
+            </span>
+          );
+        })}
+      </div>
+      <div className="map-controls" role="group" aria-label="Map navigation controls">
+        <div className="map-zoom-row">
+          <button
+            type="button"
+            aria-label="Zoom out"
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01}
+            onClick={() => zoomAt(size.width / 2, size.height / 2, view.scale / 1.45)}
+          >−</button>
+          <button
+            type="button"
+            className="map-zoom-reset"
+            aria-label={`Reset map zoom, currently ${Math.round(view.scale * 100)} percent`}
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01}
+            onClick={() => updateView(() => ({ scale: MIN_ZOOM, x: 0, y: 0 }))}
+          >{Math.round(view.scale * 100)}%</button>
+          <button
+            type="button"
+            aria-label="Zoom in"
+            aria-controls={mapCanvasId}
+            disabled={view.scale >= MAX_ZOOM - 0.01}
+            onClick={() => zoomAt(size.width / 2, size.height / 2, view.scale * 1.45)}
+          >+</button>
+        </div>
+        <div className="map-pan-grid" role="group" aria-label="Map pan controls">
+          <button
+            type="button"
+            className="pan-up"
+            aria-label="Pan map up"
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01 || view.y >= -0.5}
+            onClick={() => panBy(0, 88)}
+          >↑</button>
+          <button
+            type="button"
+            className="pan-left"
+            aria-label="Pan map left"
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01 || view.x >= -0.5}
+            onClick={() => panBy(88, 0)}
+          >←</button>
+          <button
+            type="button"
+            className="pan-down"
+            aria-label="Pan map down"
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01 || view.y <= size.height * (1 - view.scale) + 0.5}
+            onClick={() => panBy(0, -88)}
+          >↓</button>
+          <button
+            type="button"
+            className="pan-right"
+            aria-label="Pan map right"
+            aria-controls={mapCanvasId}
+            disabled={view.scale <= MIN_ZOOM + 0.01 || view.x <= size.width * (1 - view.scale) + 0.5}
+            onClick={() => panBy(-88, 0)}
+          >→</button>
+        </div>
+      </div>
       {hoveredRoute && (
         <div
           className="map-tooltip"
@@ -429,11 +954,13 @@ export function NetworkMap({
         role="status"
         aria-atomic="true"
       >
-        {hoveredRoute
+        {selectionMode === "airport"
+          ? "Zoom until the airport you need appears. Use Tab to reach a revealed airport and Enter to select it for the ground stop."
+          : hoveredRoute
           ? `Current route: ${hoveredRoute.origin} to ${hoveredRoute.destination}, ${hoveredRoute.flights} scheduled ${hoveredRoute.flights === 1 ? "flight" : "flights"}. Press Enter to select.`
           : "No route highlighted. Use the left and right arrow keys to explore routes."}
       </div>
-      <div className="map-scale-note">Geographic view · Alaska, Hawaiʻi & territories inset</div>
+      <div className="map-scale-note">Scroll or pinch to zoom · drag or use Shift + arrows to pan · smaller airports appear closer in</div>
     </div>
   );
 }

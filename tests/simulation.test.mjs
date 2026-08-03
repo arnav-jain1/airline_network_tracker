@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compareRecordedReplay,
   getActualDelaySeedMinutes,
   simulateFlightDelay,
   simulateGroundStop,
@@ -137,4 +138,202 @@ test("actual-delay seed prefers BTS delay and handles a midnight clock fallback"
     ),
     30,
   );
+  assert.equal(
+    getActualDelaySeedMinutes(
+      flight({ actualDepartureDelay: null, scheduledDeparture: 20, actualDeparture: 23 * 60 + 40 }),
+    ),
+    0,
+  );
+});
+
+test("recorded replay compares the modeled ripple with every later same-tail departure", () => {
+  const flights = [
+    flight({
+      id: "f1",
+      actualDepartureDelay: 60,
+      nextFlightId: "f2",
+    }),
+    flight({
+      id: "f2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      scheduledArrival: 280,
+      actualDepartureDelay: 42,
+      nextFlightId: "f3",
+    }),
+    flight({
+      id: "f3",
+      origin: "DEN",
+      destination: "SEA",
+      scheduledDeparture: 400,
+      scheduledArrival: 520,
+      actualDepartureDelay: 0,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "f1", 35);
+
+  assert.equal(result.modeled.impacts.f2.departureDelayMinutes, 55);
+  assert.equal(result.modeled.impacts.f3, undefined);
+  assert.deepEqual(
+    result.downstreamLegs.map((leg) => [
+      leg.flightId,
+      leg.modeledDelayMinutes,
+      leg.modeledStatus,
+      leg.recordedDepartureDelayMinutes,
+      leg.status,
+    ]),
+    [
+      ["f2", 55, "delayed", 42, "delayed"],
+      ["f3", 0, "recovered", 0, "on-time-or-early"],
+    ],
+  );
+  assert.equal(result.summary.modeledDelayedLegCount, 1);
+  assert.equal(result.summary.recordedDelayedLegCount, 1);
+  assert.equal(result.summary.knownRecordedLegCount, 2);
+  assert.equal(result.summary.recordedDownstreamDelayMinutes, 42);
+  assert.deepEqual(result.recordedDelayedRouteKeys, ["DFW-DEN"]);
+});
+
+test("recorded replay includes and stops at a cancelled later leg", () => {
+  const flights = [
+    flight({ id: "f1", actualDepartureDelay: 25, nextFlightId: "f2" }),
+    flight({
+      id: "f2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      cancelled: true,
+      actualDepartureDelay: null,
+      nextFlightId: "f3",
+    }),
+    flight({
+      id: "f3",
+      origin: "DEN",
+      destination: "SEA",
+      scheduledDeparture: 400,
+      actualDepartureDelay: 18,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "f1", 35);
+
+  assert.deepEqual(result.downstreamLegs.map((leg) => leg.flightId), ["f2"]);
+  assert.equal(result.downstreamLegs[0].status, "cancelled");
+  assert.equal(result.downstreamLegs[0].modeledStatus, "stopped");
+  assert.equal(result.summary.cancelledCount, 1);
+  assert.equal(result.summary.knownRecordedLegCount, 0);
+  assert.deepEqual(result.recordedDelayedRouteKeys, []);
+});
+
+test("recorded replay counts a diverted leg's known departure delay before stopping", () => {
+  const flights = [
+    flight({ id: "f1", actualDepartureDelay: 40, nextFlightId: "f2" }),
+    flight({
+      id: "f2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      diverted: true,
+      actualDepartureDelay: 23,
+      nextFlightId: "f3",
+    }),
+    flight({
+      id: "f3",
+      origin: "DEN",
+      destination: "SEA",
+      scheduledDeparture: 400,
+      actualDepartureDelay: 18,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "f1", 35);
+
+  assert.deepEqual(result.downstreamLegs.map((leg) => leg.flightId), ["f2"]);
+  assert.equal(result.downstreamLegs[0].status, "diverted");
+  assert.equal(result.downstreamLegs[0].modeledStatus, "stopped");
+  assert.equal(result.summary.divertedCount, 1);
+  assert.equal(result.summary.knownRecordedLegCount, 1);
+  assert.equal(result.summary.recordedDelayedLegCount, 1);
+  assert.equal(result.summary.recordedDownstreamDelayMinutes, 23);
+});
+
+test("recorded replay reports recovery, not a model stop, for a later cancellation beyond the ripple", () => {
+  const flights = [
+    flight({
+      id: "f1",
+      actualDepartureDelay: 10,
+      nextFlightId: "f2",
+    }),
+    flight({
+      id: "f2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 300,
+      scheduledArrival: 360,
+      actualDepartureDelay: 0,
+      nextFlightId: "f3",
+    }),
+    flight({
+      id: "f3",
+      origin: "DEN",
+      destination: "SEA",
+      scheduledDeparture: 420,
+      cancelled: true,
+      actualDepartureDelay: null,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "f1", 35);
+
+  assert.equal(result.modeled.stops.length, 0);
+  assert.equal(result.downstreamLegs[0].modeledStatus, "recovered");
+  assert.equal(result.downstreamLegs[1].modeledStatus, "recovered");
+  assert.equal(result.downstreamLegs[1].status, "cancelled");
+});
+
+test("recorded replay does not traverse onward from an invalid selected seed", () => {
+  for (const invalid of [
+    { cancelled: true, diverted: false },
+    { cancelled: false, diverted: true },
+  ]) {
+    const flights = [
+      flight({
+        id: "f1",
+        actualDepartureDelay: null,
+        nextFlightId: "f2",
+        ...invalid,
+      }),
+      flight({
+        id: "f2",
+        origin: "DFW",
+        destination: "DEN",
+        scheduledDeparture: 220,
+        actualDepartureDelay: 18,
+      }),
+    ];
+
+    const result = compareRecordedReplay(flights, "f1", 35);
+    assert.equal(result.downstreamLegs.length, 0);
+  }
+});
+
+test("recorded replay counts an unknown linked observation separately", () => {
+  const flights = [
+    flight({ id: "f1", actualDepartureDelay: 30, nextFlightId: "f2" }),
+    flight({
+      id: "f2",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      actualDepartureDelay: null,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "f1", 35);
+
+  assert.equal(result.summary.downstreamLegCount, 1);
+  assert.equal(result.summary.knownRecordedLegCount, 0);
+  assert.equal(result.summary.unknownRecordedLegCount, 1);
 });

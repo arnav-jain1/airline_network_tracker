@@ -37,6 +37,8 @@ Clock times are integer minutes after local midnight. BTS `2400` is preserved as
 
 `actualDepartureDelay` is derived from the scheduled and actual departure clocks because this export has no `DEP_DELAY` column. A clock difference crossing midnight is normalized to the nearest day, then negative (early) values are clamped to zero. It is `null` when actual departure is unavailable. Consequently, the source cannot distinguish an exceptionally rare delay longer than 12 hours from a clock/date ambiguity.
 
+Recorded-delay replay follows the selected flight's `nextFlightId` chain after the modeled delay has recovered and compares each later modeled departure delay with that leg's `actualDepartureDelay`. Those later values can reflect weather, ATC, crew, gate, maintenance, passenger, or other disruptions; they are a same-tail historical comparison, not causal attribution to the selected flight.
+
 Flights are grouped by tail number within one carrier/day and sorted by scheduled departure. `nextFlightId` is set only for adjacent legs when the current destination equals the next origin and the next scheduled departure is later than the current scheduled arrival in that shared airport-local clock. If the arrival clock is earlier than the originating departure clock, it is treated as an overnight arrival by adding 1,440 minutes. No cross-day rotation link is inferred.
 
 Routes are derived client-side from the flight arrays and are not duplicated in chunk files. Each manifest chunk entry retains `routeCount`; manifest route totals are date/carrier route instances, not globally unique airport pairs.

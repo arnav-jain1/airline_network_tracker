@@ -1,6 +1,6 @@
 # Turnline
 
-Turnline turns a BTS on-time reporting export into an interactive domestic airline network. Pick a service date and operating carrier, select a route and exact departure, then simulate a custom or recorded departure delay. The map marks affected routes in red as delay propagates through the aircraft's later legs. An airport ground-stop mode holds departures inside a selected local-time window and propagates those aircraft delays too.
+Turnline turns a BTS on-time reporting export into an interactive domestic airline network. Pick a service date and operating carrier, zoom and pan through the network, select a route and exact departure, then simulate a custom or recorded departure delay. Airport markers appear progressively as the view gets closer, with the carrier-day's largest stations visible first. The map marks affected routes in red as delay propagates through the aircraft's later legs. An airport ground-stop mode lets you choose a revealed airport marker, holds departures inside a selected local-time window, and propagates those aircraft delays too.
 
 ## Data
 
@@ -18,7 +18,8 @@ The included May 2026 output contains 611,735 flights across 31 dates and 13 ope
 
 - Delay propagation follows `TAIL_NUM` within the selected airline and service day.
 - A 35-minute minimum turn is assumed; extra scheduled ground time absorbs delay.
-- Recorded scenarios use the positive departure delay derived from `DEP_TIME` versus `CRS_DEP_TIME`.
+- Recorded scenarios use the positive departure delay derived from `DEP_TIME` versus `CRS_DEP_TIME`, then compare the modeled ripple with recorded later departures linked to the same reported tail.
+- A later same-tail flight's recorded delay is an observed outcome, not proof that the selected flight caused it.
 - Ground stops hold departures from the selected airport during a same-day time window.
 - Cancellations, diversions, missing tails, broken rotations, and the end of the service day stop propagation.
 - Crew, gates, passenger connections, maintenance, aircraft swaps, and cross-day rotations are not modeled because the export does not contain those relationships.

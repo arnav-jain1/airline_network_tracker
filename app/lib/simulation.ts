@@ -16,15 +16,15 @@ export interface Flight {
   originId: number;
   destinationId: number;
   scheduledDeparture: number;
-  actualDeparture: number | null;
+  actualDeparture?: number | null;
   scheduledArrival: number;
-  actualArrival: number | null;
+  actualArrival?: number | null;
   scheduledElapsed: number;
-  actualElapsed: number | null;
+  actualElapsed?: number | null;
   distance: number;
   cancelled: boolean;
   diverted: boolean;
-  actualDepartureDelay: number | null;
+  actualDepartureDelay?: number | null;
   nextFlightId: string | null;
   carrierDelay?: number | null;
   weatherDelay?: number | null;
@@ -95,6 +95,45 @@ export interface SimulationResult {
   stops: PropagationStop[];
 }
 
+export type RecordedLegStatus =
+  | "delayed"
+  | "on-time-or-early"
+  | "cancelled"
+  | "diverted"
+  | "unknown";
+
+export interface RecordedDownstreamLeg {
+  flightId: string;
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  routeKey: string;
+  scheduledDeparture: number;
+  modeledDelayMinutes: number;
+  modeledStatus: "delayed" | "recovered" | "stopped";
+  recordedDepartureDelayMinutes: number | null;
+  status: RecordedLegStatus;
+}
+
+export interface RecordedReplayResult {
+  modeled: SimulationResult;
+  downstreamLegs: RecordedDownstreamLeg[];
+  recordedDelayedRouteKeys: string[];
+  summary: {
+    downstreamLegCount: number;
+    knownRecordedLegCount: number;
+    recordedDelayedLegCount: number;
+    recordedDownstreamDelayMinutes: number;
+    maxRecordedDelayMinutes: number;
+    cancelledCount: number;
+    divertedCount: number;
+    unknownRecordedLegCount: number;
+    modeledDelayedLegCount: number;
+    modeledDownstreamDelayMinutes: number;
+    recordedDelayedAmongModeledCount: number;
+  };
+}
+
 interface PropagationRun {
   impacts: FlightImpact[];
   stop?: PropagationStop;
@@ -107,8 +146,9 @@ export function getRouteKey(flight: Pick<Flight, "origin" | "destination">): str
 }
 
 /**
- * Returns the non-negative observed departure delay to use for the "actual
- * delay" scenario. BTS DEP_DELAY is preferred; clock times are a fallback.
+ * Returns the non-negative observed departure delay to use for the recorded
+ * scenario. Prepared chunks provide a clock-derived delay; raw clock times are
+ * retained as a fallback for callers using the wider Flight contract.
  */
 export function getActualDelaySeedMinutes(
   flight: Pick<Flight, "actualDepartureDelay" | "actualDeparture" | "scheduledDeparture">,
@@ -125,6 +165,8 @@ export function getActualDelaySeedMinutes(
   // A late-night scheduled departure followed by a post-midnight actual time.
   if (delay < -MINUTES_PER_DAY / 2) {
     delay += MINUTES_PER_DAY;
+  } else if (delay > MINUTES_PER_DAY / 2) {
+    delay -= MINUTES_PER_DAY;
   }
 
   return Math.max(0, delay);
@@ -191,6 +233,155 @@ export function simulateActualFlightDelay(
   const selected = flights.find((flight) => flight.id === selectedId);
   const actualDelay = selected ? getActualDelaySeedMinutes(selected) : 0;
   return simulateFlightDelay(flights, selectedId, actualDelay, minTurnMinutes);
+}
+
+/**
+ * Replays the selected flight's recorded departure delay, then follows every
+ * valid later leg assigned to the same reported aircraft. The modeled delay
+ * can recover before this observed chain ends, which lets the UI compare the
+ * hypothetical ripple with what later departures actually recorded.
+ *
+ * Recorded delay on a later leg is an operational outcome, not causal proof
+ * that the selected flight created it.
+ */
+export function compareRecordedReplay(
+  flights: readonly Flight[],
+  selectedId: string,
+  minTurnMinutes = 35,
+): RecordedReplayResult {
+  const modeled = simulateActualFlightDelay(flights, selectedId, minTurnMinutes);
+  const flightById = indexFlights(flights);
+  const selected = flightById.get(selectedId);
+  const downstreamLegs: RecordedDownstreamLeg[] = [];
+  const recordedRouteSet = new Set<string>();
+  const modeledStoppedFlightIds = new Set(
+    modeled.stops
+      .map((stop) => stop.nextFlightId)
+      .filter((flightId): flightId is string => Boolean(flightId)),
+  );
+
+  if (selected && !selected.cancelled && !selected.diverted) {
+    const visited = new Set<string>([selected.id]);
+    let current = selected;
+
+    while (current.nextFlightId) {
+      const next = flightById.get(current.nextFlightId);
+      if (
+        !next
+        || visited.has(next.id)
+        || !current.tail
+        || !next.tail
+        || next.tail !== current.tail
+        || next.origin !== current.destination
+        || next.scheduledDeparture + EPSILON < current.scheduledDeparture
+      ) {
+        break;
+      }
+
+      visited.add(next.id);
+      const recordedDelay = isFiniteNumber(next.actualDepartureDelay)
+        ? next.actualDepartureDelay
+        : null;
+      const status: RecordedLegStatus = next.cancelled
+        ? "cancelled"
+        : next.diverted
+          ? "diverted"
+          : recordedDelay == null
+            ? "unknown"
+            : recordedDelay > EPSILON
+              ? "delayed"
+              : "on-time-or-early";
+      const routeKey = getRouteKey(next);
+      const modeledDelayMinutes = modeled.impacts[next.id]?.departureDelayMinutes ?? 0;
+
+      downstreamLegs.push({
+        flightId: next.id,
+        flightNumber: next.flightNumber,
+        origin: next.origin,
+        destination: next.destination,
+        routeKey,
+        scheduledDeparture: next.scheduledDeparture,
+        modeledDelayMinutes,
+        modeledStatus: modeledStoppedFlightIds.has(next.id)
+          ? "stopped"
+          : modeledDelayMinutes > EPSILON
+            ? "delayed"
+            : "recovered",
+        recordedDepartureDelayMinutes: recordedDelay,
+        status,
+      });
+
+      if (!next.cancelled && recordedDelay != null && recordedDelay > EPSILON) {
+        recordedRouteSet.add(routeKey);
+      }
+      if (next.cancelled || next.diverted) {
+        break;
+      }
+      current = next;
+    }
+  }
+
+  let knownRecordedLegCount = 0;
+  let recordedDelayedLegCount = 0;
+  let recordedDownstreamDelayMinutes = 0;
+  let maxRecordedDelayMinutes = 0;
+  let cancelledCount = 0;
+  let divertedCount = 0;
+  let unknownRecordedLegCount = 0;
+  let modeledDelayedLegCount = 0;
+  let modeledDownstreamDelayMinutes = 0;
+  let recordedDelayedAmongModeledCount = 0;
+
+  for (const leg of downstreamLegs) {
+    if (leg.modeledStatus === "delayed") {
+      modeledDelayedLegCount += 1;
+      modeledDownstreamDelayMinutes += leg.modeledDelayMinutes;
+    }
+    if (leg.status === "cancelled") {
+      cancelledCount += 1;
+    }
+    if (leg.status === "diverted") {
+      divertedCount += 1;
+    }
+    if (
+      leg.recordedDepartureDelayMinutes == null
+      && leg.status !== "cancelled"
+    ) {
+      unknownRecordedLegCount += 1;
+    }
+
+    if (leg.recordedDepartureDelayMinutes != null && leg.status !== "cancelled") {
+      knownRecordedLegCount += 1;
+      if (leg.recordedDepartureDelayMinutes > EPSILON) {
+        recordedDelayedLegCount += 1;
+        const positiveDelay = leg.recordedDepartureDelayMinutes;
+        recordedDownstreamDelayMinutes += positiveDelay;
+        maxRecordedDelayMinutes = Math.max(maxRecordedDelayMinutes, positiveDelay);
+        if (leg.modeledStatus === "delayed") {
+          recordedDelayedAmongModeledCount += 1;
+        }
+      }
+    }
+  }
+
+  return {
+    modeled,
+    downstreamLegs,
+    recordedDelayedRouteKeys: [...recordedRouteSet],
+    summary: {
+      downstreamLegCount: downstreamLegs.length,
+      knownRecordedLegCount,
+      recordedDelayedLegCount,
+      recordedDownstreamDelayMinutes,
+      maxRecordedDelayMinutes,
+      cancelledCount,
+      divertedCount,
+      unknownRecordedLegCount,
+      modeledDelayedLegCount,
+      modeledDownstreamDelayMinutes,
+      recordedDelayedAmongModeledCount,
+    },
+  };
 }
 
 /**
@@ -537,7 +728,7 @@ function positiveModulo(value: number, divisor: number): number {
   return ((value % divisor) + divisor) % divisor;
 }
 
-function isFiniteNumber(value: number | null): value is number {
+function isFiniteNumber(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 

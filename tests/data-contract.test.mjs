@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { simulateFlightDelay } from "../app/lib/simulation.ts";
+import {
+  compareRecordedReplay,
+  simulateFlightDelay,
+} from "../app/lib/simulation.ts";
 
 const publicRoot = new URL("../public/", import.meta.url);
 const dataRoot = new URL("../public/data/", import.meta.url);
@@ -96,4 +99,26 @@ test("a representative chunk inflates into valid rotations and simulations", asy
   assert.ok(result.summary.affectedFlightCount >= 1);
   assert.equal(result.affectedFlights[0].flightId, seed.id);
   assert.ok(result.delayedRouteKeys.includes(`${seed.origin}-${seed.destination}`));
+
+  const replaySeed = linked.find((flight) => {
+    const next = byId.get(flight.nextFlightId);
+    return (
+      flight.actualDepartureDelay >= 30
+      && !flight.cancelled
+      && !flight.diverted
+      && next
+      && !next.cancelled
+      && !next.diverted
+      && Number.isFinite(next.actualDepartureDelay)
+    );
+  });
+  assert.ok(replaySeed, "Expected a recorded-delay seed with a known later departure");
+  const replay = compareRecordedReplay(flights, replaySeed.id);
+  const recordedNext = byId.get(replaySeed.nextFlightId);
+  assert.equal(replay.modeled.affectedFlights[0].flightId, replaySeed.id);
+  assert.equal(replay.downstreamLegs[0].flightId, replaySeed.nextFlightId);
+  assert.equal(
+    replay.downstreamLegs[0].recordedDepartureDelayMinutes,
+    recordedNext.actualDepartureDelay,
+  );
 });
