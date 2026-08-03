@@ -10,7 +10,7 @@ The source files live in the ignored `work/` directory. Run:
 npm run data:prepare
 ```
 
-This streams the large BTS CSV, joins DOT airport IDs to codes and public airport coordinates, validates same-day tail rotations, and writes compact date/carrier chunks under `public/data/`. See `DATA_NOTES.md` for the exact schema, join rules, diagnostics, and assumptions.
+This streams every `T_ONTIME_REPORTING*.csv` file in `work/`, joins DOT airport IDs to codes and public airport coordinates, validates same-day tail rotations, and writes compact date/carrier chunks under `public/data/`. Add monthly BTS exports as separate files with the same selected columns; no manual merge is required. See `DATA_NOTES.md` for the exact schema, join rules, diagnostics, and assumptions.
 
 The included May 2026 output contains 611,735 flights across 31 dates and 13 operating carriers. No source flight rows were omitted during preparation.
 

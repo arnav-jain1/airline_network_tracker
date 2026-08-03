@@ -1408,6 +1408,113 @@ canvas:focus-visible {
   color: var(--red-soft);
 }
 
+.aircraft-day {
+  margin-top: 17px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.aircraft-day-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+  color: var(--ink-soft);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.aircraft-day-heading h3 {
+  margin: 0;
+  font: inherit;
+}
+
+.aircraft-day-heading span:last-child {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.aircraft-day-row {
+  grid-template-columns: 34px minmax(0, 1fr) minmax(92px, auto);
+  min-height: 61px;
+}
+
+.aircraft-day-list.with-recorded .aircraft-day-row {
+  grid-template-columns: 34px minmax(0, 1fr) 128px;
+  min-height: 68px;
+}
+
+.aircraft-day-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.aircraft-day-row.scenario-start {
+  margin: 0 -7px;
+  padding: 7px 7px 4px;
+  border: 1px solid rgba(9, 107, 159, 0.34);
+  border-radius: 9px;
+  background: rgba(9, 107, 159, 0.075);
+}
+
+.aircraft-day-row.scenario-start::before {
+  top: 32px;
+  bottom: -12px;
+  left: 19px;
+}
+
+.aircraft-day-row.scenario-start .rotation-index {
+  border-color: rgba(9, 107, 159, 0.54);
+  color: var(--blue-soft);
+}
+
+.aircraft-day-row.recovery-point .rotation-index {
+  border-color: rgba(31, 122, 75, 0.5);
+  color: var(--green);
+}
+
+.aircraft-day-row.recovery-point::before {
+  background: rgba(31, 122, 75, 0.28);
+}
+
+.aircraft-day-status {
+  max-width: 130px;
+  text-align: right;
+  line-height: 1.3;
+}
+
+.aircraft-day-status.recovered,
+.replay-delay-pair strong.recovered {
+  color: var(--green);
+}
+
+.rotation-outcome {
+  margin-top: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(248, 250, 252, 0.96);
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.rotation-outcome.recovered {
+  border-color: rgba(31, 122, 75, 0.28);
+  background: rgba(31, 122, 75, 0.07);
+  color: var(--green);
+}
+
+.aircraft-day-note {
+  margin-top: 9px;
+}
+
 .empty-impact.compact {
   min-height: 0;
   margin-top: 14px;

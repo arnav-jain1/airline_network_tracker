@@ -41,7 +41,13 @@ test("manifest indexes every compact day/carrier chunk", async () => {
   const manifest = await readJson(new URL("manifest.json", dataRoot));
 
   assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.dates.length, 31);
+  assert.ok(manifest.dates.length >= 1);
+  assert.deepEqual(manifest.dates, [...new Set(manifest.dates)].sort());
+  assert.equal(manifest.dataset.startDate ?? manifest.dates[0], manifest.dates[0]);
+  assert.equal(
+    manifest.dataset.endDate ?? manifest.dates.at(-1),
+    manifest.dates.at(-1),
+  );
   assert.ok(manifest.carriers.length >= 10);
   assert.ok(manifest.totals.flights > 500_000);
   assert.equal(
@@ -60,8 +66,13 @@ test("manifest indexes every compact day/carrier chunk", async () => {
 });
 
 test("a representative chunk inflates into valid rotations and simulations", async () => {
+  const manifest = await readJson(new URL("manifest.json", dataRoot));
+  const representative = manifest.chunks
+    .filter((chunk) => chunk.flightCount > 2_000)
+    .sort((a, b) => b.flightCount - a.flightCount)[0] ?? manifest.chunks[0];
+  assert.ok(representative, "Expected at least one carrier-day chunk");
   const [chunk, airportPayload] = await Promise.all([
-    readJson(new URL("days/2026-05-16/AA.json", dataRoot)),
+    readJson(new URL(`.${representative.path}`, publicRoot)),
     readJson(new URL("airports.json", dataRoot)),
   ]);
 

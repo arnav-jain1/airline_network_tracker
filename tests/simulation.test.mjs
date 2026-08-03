@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   compareRecordedReplay,
+  getAircraftDayRotation,
   getDelaySeverity,
   getActualDelaySeedMinutes,
+  getRecordedDepartureObservation,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../app/lib/simulation.ts";
@@ -156,6 +158,72 @@ test("actual-delay seed prefers BTS delay and handles a midnight clock fallback"
   );
 });
 
+test("recorded observations share replay statuses and raw-clock fallback", () => {
+  assert.deepEqual(
+    getRecordedDepartureObservation(flight({ actualDepartureDelay: 0 })),
+    { delayMinutes: 0, status: "on-time-or-early" },
+  );
+  assert.deepEqual(
+    getRecordedDepartureObservation(flight({ diverted: true, actualDepartureDelay: 23 })),
+    { delayMinutes: 23, status: "diverted" },
+  );
+  assert.deepEqual(
+    getRecordedDepartureObservation(flight({
+      scheduledDeparture: 23 * 60 + 50,
+      actualDeparture: 20,
+      actualDepartureDelay: null,
+    })),
+    { delayMinutes: 30, status: "delayed" },
+  );
+});
+
+test("aircraft-day rotation keeps earlier and unlinked same-tail flights as context", () => {
+  const flights = [
+    flight({ id: "before", scheduledDeparture: 20, nextFlightId: "seed" }),
+    flight({ id: "seed", scheduledDeparture: 100, nextFlightId: "linked" }),
+    flight({
+      id: "linked",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      nextFlightId: "recovery",
+    }),
+    flight({
+      id: "recovery",
+      origin: "DEN",
+      destination: "SEA",
+      scheduledDeparture: 400,
+    }),
+    flight({
+      id: "outside",
+      origin: "JFK",
+      destination: "BOS",
+      scheduledDeparture: 500,
+    }),
+    flight({ id: "other-tail", tail: "N202AA", scheduledDeparture: 300 }),
+  ];
+
+  const rotation = getAircraftDayRotation(flights, "seed");
+
+  assert.deepEqual(
+    rotation.flights.map((item) => item.id),
+    ["before", "seed", "linked", "recovery", "outside"],
+  );
+  assert.equal(rotation.selectedIndex, 1);
+  assert.deepEqual(rotation.linkedFlightIds, ["seed", "linked", "recovery"]);
+  assert.equal(rotation.tail, "N101AA");
+});
+
+test("aircraft-day rotation falls back to only the selected flight when tail is missing", () => {
+  const selected = flight({ id: "seed", tail: null });
+  const rotation = getAircraftDayRotation([selected, flight({ id: "other" })], "seed");
+
+  assert.deepEqual(rotation.flights.map((item) => item.id), ["seed"]);
+  assert.deepEqual(rotation.linkedFlightIds, ["seed"]);
+  assert.equal(rotation.selectedIndex, 0);
+  assert.equal(rotation.tail, null);
+});
+
 test("recorded replay compares the modeled ripple with every later same-tail departure", () => {
   const flights = [
     flight({
@@ -203,6 +271,39 @@ test("recorded replay compares the modeled ripple with every later same-tail dep
   assert.equal(result.summary.recordedDelayedLegCount, 1);
   assert.equal(result.summary.knownRecordedLegCount, 2);
   assert.equal(result.summary.recordedDownstreamDelayMinutes, 42);
+  assert.deepEqual(result.recordedDelayedRouteKeys, ["DFW-DEN"]);
+});
+
+test("recorded replay summaries stay downstream-only when the full aircraft day has earlier legs", () => {
+  const flights = [
+    flight({
+      id: "before",
+      scheduledDeparture: 20,
+      actualDepartureDelay: 90,
+      nextFlightId: "seed",
+    }),
+    flight({
+      id: "seed",
+      scheduledDeparture: 100,
+      actualDepartureDelay: 60,
+      nextFlightId: "after",
+    }),
+    flight({
+      id: "after",
+      origin: "DFW",
+      destination: "DEN",
+      scheduledDeparture: 220,
+      scheduledArrival: 280,
+      actualDepartureDelay: 42,
+    }),
+  ];
+
+  const result = compareRecordedReplay(flights, "seed", 35);
+
+  assert.deepEqual(result.downstreamLegs.map((leg) => leg.flightId), ["after"]);
+  assert.equal(result.summary.recordedDelayedLegCount, 1);
+  assert.equal(result.summary.recordedDownstreamDelayMinutes, 42);
+  assert.equal(result.summary.maxRecordedDelayMinutes, 42);
   assert.deepEqual(result.recordedDelayedRouteKeys, ["DFW-DEN"]);
 });
 

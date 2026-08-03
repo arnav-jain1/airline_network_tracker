@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  type AircraftDayRotation,
   type Flight,
-  type RecordedDownstreamLeg,
   type RecordedReplayResult,
   type SimulationResult,
   compareRecordedReplay,
+  getAircraftDayRotation,
   getActualDelaySeedMinutes,
   getDelaySeverity,
+  getRecordedDepartureObservation,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../lib/simulation";
@@ -29,7 +31,14 @@ type ManifestChunk = {
 type Manifest = {
   schemaVersion: number;
   generatedAt: string;
-  dataset: { sourceFile: string; year: number; month: number };
+  dataset: {
+    sourceFile: string | null;
+    sourceFiles?: string[];
+    year: number | null;
+    month: number | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  };
   dates: string[];
   carriers: string[];
   availability: Record<string, string[]>;
@@ -90,8 +99,24 @@ function formatDate(date: string, compact = false) {
   if (!date) return "";
   const value = new Date(`${date}T12:00:00`);
   return value.toLocaleDateString("en-US", compact
-    ? { month: "short", day: "numeric" }
+    ? { month: "short", day: "numeric", year: "numeric" }
     : { weekday: "short", month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatDatasetRange(dates: readonly string[]) {
+  const first = dates[0];
+  const last = dates.at(-1);
+  if (!first || !last) return "No dates";
+  const firstDate = new Date(`${first}T12:00:00`);
+  const lastDate = new Date(`${last}T12:00:00`);
+  const firstMonth = firstDate.toLocaleDateString("en-US", { month: "short" });
+  const lastMonth = lastDate.toLocaleDateString("en-US", { month: "short" });
+  const firstYear = firstDate.getFullYear();
+  const lastYear = lastDate.getFullYear();
+  if (first.slice(0, 7) === last.slice(0, 7)) return `${firstMonth} ${firstYear}`;
+  return firstYear === lastYear
+    ? `${firstMonth}–${lastMonth} ${firstYear}`
+    : `${firstMonth} ${firstYear}–${lastMonth} ${lastYear}`;
 }
 
 function formatTime(minutes: number | null | undefined) {
@@ -279,6 +304,13 @@ export function NetworkWorkbench() {
     return explicit ?? routeFlights.find((flight) => !flight.cancelled && !flight.diverted) ?? null;
   }, [routeFlights, selectedFlightId]);
 
+  const selectedAircraftRotation = useMemo(
+    () => selectedFlight
+      ? getAircraftDayRotation(flights, selectedFlight.id)
+      : null,
+    [flights, selectedFlight],
+  );
+
   const airportTraffic = useMemo(() => {
     const counts = new Map<string, number>();
     for (const flight of flights) {
@@ -338,9 +370,7 @@ export function NetworkWorkbench() {
     [flights],
   );
   const observedDelay = selectedFlight ? getActualDelaySeedMinutes(selectedFlight) : 0;
-  const datasetMonth = manifest
-    ? new Date(manifest.dataset.year, manifest.dataset.month - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" })
-    : "";
+  const datasetRange = manifest ? formatDatasetRange(manifest.dates) : "";
 
   function selectRoute(route: NetworkRoute) {
     setScenarioMode("flight");
@@ -449,7 +479,7 @@ export function NetworkWorkbench() {
           </div>
         </div>
 
-        <div className="source-badge">BTS on-time · {datasetMonth}</div>
+        <div className="source-badge">BTS on-time · {datasetRange}</div>
       </header>
 
       <main className="workspace">
@@ -545,6 +575,7 @@ export function NetworkWorkbench() {
                   observedDelay={observedDelay}
                   simulation={simulation}
                   recordedReplay={recordedReplay}
+                  aircraftRotation={selectedAircraftRotation}
                   onSelectRoute={selectRoute}
                   onClearRoute={() => setSelectedRouteKey(null)}
                   onSelectFlight={selectExactFlight}
@@ -590,6 +621,7 @@ type FlightDelayPanelProps = {
   observedDelay: number;
   simulation: SimulationResult | null;
   recordedReplay: RecordedReplayResult | null;
+  aircraftRotation: AircraftDayRotation | null;
   onSelectRoute: (route: NetworkRoute) => void;
   onClearRoute: () => void;
   onSelectFlight: (id: string) => void;
@@ -607,6 +639,7 @@ function FlightDelayPanel({
   observedDelay,
   simulation,
   recordedReplay,
+  aircraftRotation,
   onSelectRoute,
   onClearRoute,
   onSelectFlight,
@@ -731,6 +764,9 @@ function FlightDelayPanel({
         <ImpactPanel
           simulation={simulation}
           recordedReplay={recordedReplay}
+          aircraftRotation={aircraftRotation}
+          selectedFlight={selectedFlight}
+          delaySource={delaySource}
           emptyMessage={delayMinutes === 0 ? "Set a delay above zero to run the rotation." : "This delay is recovered before the next aircraft leg."}
         />
       )}
@@ -798,26 +834,170 @@ function GroundStopPanel({
   );
 }
 
-function recordedLegLabel(leg: RecordedDownstreamLeg) {
-  if (leg.status === "cancelled") return "Cancelled";
-  const minutes = leg.recordedDepartureDelayMinutes ?? 0;
-  const timing = leg.recordedDepartureDelayMinutes == null
+function recordedFlightLabel(flight: Flight) {
+  const observation = getRecordedDepartureObservation(flight);
+  if (observation.status === "cancelled") return "Cancelled";
+  const timing = observation.delayMinutes == null
     ? "Unknown"
-    : minutes > 0
-      ? `+${Math.round(minutes)}m`
-      : minutes < 0
-        ? `−${Math.abs(Math.round(minutes))}m`
-        : "On time / early";
-  return leg.status === "diverted" ? `${timing} · diverted` : timing;
+    : observation.delayMinutes > 0
+      ? `+${Math.round(observation.delayMinutes)}m`
+      : "On time / early";
+  return observation.status === "diverted" ? `${timing} · diverted` : timing;
+}
+
+function stopReasonLabel(reason: SimulationResult["stops"][number]["reason"]) {
+  switch (reason) {
+    case "cancelled": return "a cancellation";
+    case "diverted": return "a diversion";
+    case "airport-mismatch": return "a broken airport sequence";
+    case "out-of-order": return "an invalid timing sequence";
+    case "tail-mismatch": return "an aircraft change";
+    case "missing-tail": return "a missing aircraft tail";
+    case "missing-next-flight": return "a missing next flight";
+    case "cycle": return "an invalid rotation loop";
+  }
+}
+
+function AircraftDayTimeline({
+  rotation,
+  selectedFlight,
+  simulation,
+  showRecorded,
+}: {
+  rotation: AircraftDayRotation;
+  selectedFlight: Flight;
+  simulation: SimulationResult | null;
+  showRecorded: boolean;
+}) {
+  const linkedFlightIds = new Set(rotation.linkedFlightIds);
+  const stoppedFlightIds = new Set(
+    simulation?.stops
+      .map((stop) => stop.nextFlightId)
+      .filter((flightId): flightId is string => Boolean(flightId)) ?? [],
+  );
+  const recoveryFlight = simulation
+    && simulation.summary.affectedFlightCount > 0
+    && simulation.stops.length === 0
+    ? rotation.flights.find((flight, index) =>
+        index > rotation.selectedIndex
+        && linkedFlightIds.has(flight.id)
+        && !simulation.impacts[flight.id]) ?? null
+    : null;
+  const firstStop = simulation?.stops[0] ?? null;
+  const stopFlightId = firstStop?.nextFlightId ?? firstStop?.flightId;
+  const stopFlight = rotation.flights.find((flight) => flight.id === stopFlightId);
+  const outcome = recoveryFlight
+    ? `Back on schedule at ${formatTime(recoveryFlight.scheduledDeparture)} · Flight ${recoveryFlight.flightNumber}.`
+    : simulation?.summary.affectedFlightCount
+      ? firstStop
+        ? `No modeled recovery: propagation stops${stopFlight ? ` at ${formatTime(stopFlight.scheduledDeparture)} · Flight ${stopFlight.flightNumber}` : ""} because of ${stopReasonLabel(firstStop.reason)}.`
+        : "No recovery appears before this linked service-day rotation ends."
+      : "No delay is currently introduced.";
+
+  return (
+    <section className="aircraft-day" aria-labelledby="aircraft-day-heading">
+      <div className="aircraft-day-heading">
+        <h3 id="aircraft-day-heading">Aircraft day · {rotation.tail ?? "Tail unavailable"}</h3>
+        <span>{plural(rotation.flights.length, "flight")}</span>
+      </div>
+      <ol className={`rotation-list aircraft-day-list${showRecorded ? " with-recorded" : ""}`}>
+        {rotation.flights.map((flight, index) => {
+          const beforeScenario = index < rotation.selectedIndex;
+          const isSelected = flight.id === selectedFlight.id;
+          const isLinked = linkedFlightIds.has(flight.id);
+          const impact = simulation?.impacts[flight.id] ?? null;
+          const isRecovery = flight.id === recoveryFlight?.id;
+          const modelStopped = stoppedFlightIds.has(flight.id);
+          const modelLabel = beforeScenario
+            ? "Before scenario"
+            : impact
+              ? isSelected
+                ? `+${Math.round(impact.departureDelayMinutes)}m · starts here`
+                : `+${Math.round(impact.departureDelayMinutes)}m`
+              : modelStopped
+                ? "Model stops"
+                : !isLinked
+                  ? "Outside linked rotation"
+                  : isRecovery
+                    ? "Recovered here"
+                    : isSelected
+                      ? "Selected · no added delay"
+                      : "No modeled delay";
+          const modelClass = impact
+            ? delaySeverityClass(impact.departureDelayMinutes)
+            : modelStopped
+              ? "model-stopped"
+              : isRecovery
+                ? "recovered"
+                : "";
+          const recordedObservation = getRecordedDepartureObservation(flight);
+          const recordedClass = `${recordedObservation.status} ${delaySeverityClass(recordedObservation.delayMinutes)}`;
+          const rowClass = [
+            "rotation-row",
+            "aircraft-day-row",
+            isSelected ? "scenario-start" : "",
+            isRecovery ? "recovery-point" : "",
+            impact ? delaySeverityClass(impact.departureDelayMinutes) : "",
+          ].filter(Boolean).join(" ");
+
+          return (
+            <li
+              aria-current={isSelected ? "step" : undefined}
+              className={rowClass}
+              key={flight.id}
+            >
+              <span className="rotation-index">{index + 1}</span>
+              <span className="rotation-flight">
+                <strong>{flight.origin} → {flight.destination} · Flight {flight.flightNumber}</strong>
+                <span>{formatTime(flight.scheduledDeparture)} · leg {index + 1} of {rotation.flights.length}</span>
+              </span>
+              {showRecorded ? (
+                <span className="replay-delay-pair">
+                  <span>
+                    <small>Model</small>
+                    <strong className={modelClass}>{modelLabel}</strong>
+                  </span>
+                  <span>
+                    <small>Recorded</small>
+                    <strong className={recordedClass}>{recordedFlightLabel(flight)}</strong>
+                  </span>
+                </span>
+              ) : (
+                <span className={`rotation-delay aircraft-day-status ${modelClass}`}>{modelLabel}</span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <div
+        aria-live="polite"
+        className={`rotation-outcome${recoveryFlight ? " recovered" : ""}`}
+        role="status"
+      >
+        {outcome}
+      </div>
+      <p className="method-note aircraft-day-note">
+        {rotation.tail
+          ? "All flights shown share the reported tail on this carrier day. Only the linked sequence is used for propagation; rows after a broken link stay visible as context."
+          : "This flight has no reported aircraft tail, so other legs from its aircraft day cannot be identified."}
+      </p>
+    </section>
+  );
 }
 
 function ImpactPanel({
   simulation,
   recordedReplay = null,
+  aircraftRotation = null,
+  selectedFlight = null,
+  delaySource = "planned",
   emptyMessage,
 }: {
   simulation: SimulationResult | null;
   recordedReplay?: RecordedReplayResult | null;
+  aircraftRotation?: AircraftDayRotation | null;
+  selectedFlight?: Flight | null;
+  delaySource?: DelaySource;
   emptyMessage: string;
 }) {
   const summary = simulation?.summary;
@@ -835,6 +1015,7 @@ function ImpactPanel({
         0,
       )
     : 0;
+  const showAircraftDay = Boolean(aircraftRotation && selectedFlight);
   return (
     <section className="panel-section">
       <div className="section-label">
@@ -885,46 +1066,12 @@ function ImpactPanel({
                 </div>
               </div>
               <p className="method-note replay-disclaimer">
-                These are later departures using the same reported aircraft. Their recorded delays may have other causes; the BTS record does not prove the selected flight caused them.
+                The comparison cards and map use later linked departures. The aircraft-day rows also show earlier same-tail flights and context after any broken link. Recorded delays may have other causes; the BTS record does not prove the selected flight caused them.
                 {" "}Late means any positive recorded departure delay; zero includes on-time and early departures.
               </p>
-              {recordedReplay.downstreamLegs.length ? (
-                <div className="rotation-list replay-rotation-list">
-                  {recordedReplay.downstreamLegs.slice(0, 18).map((leg, index) => (
-                    <div className={`rotation-row replay-row ${leg.status}`} key={leg.flightId}>
-                      <span className="rotation-index">{index + 1}</span>
-                      <span className="rotation-flight">
-                        <strong>{leg.origin} → {leg.destination} · Flight {leg.flightNumber}</strong>
-                        <span>{formatTime(leg.scheduledDeparture)} · later same-tail departure</span>
-                      </span>
-                      <span className="replay-delay-pair">
-                        <span>
-                          <small>Model</small>
-                          <strong className={leg.modeledStatus === "delayed" ? delaySeverityClass(leg.modeledDelayMinutes) : leg.modeledStatus === "stopped" ? "model-stopped" : ""}>
-                            {leg.modeledStatus === "delayed"
-                              ? `+${Math.round(leg.modeledDelayMinutes)}m`
-                              : leg.modeledStatus === "stopped"
-                                ? "Stopped"
-                                : "Recovered"}
-                          </strong>
-                        </span>
-                        <span>
-                          <small>Recorded</small>
-                          <strong className={`${leg.status} ${delaySeverityClass(leg.recordedDepartureDelayMinutes)}`}>{recordedLegLabel(leg)}</strong>
-                        </span>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-impact compact">No later same-tail departure is linked on this service day.</div>
-              )}
-              {recordedReplay.downstreamLegs.length > 18 && (
-                <p className="method-note">Plus {recordedReplay.downstreamLegs.length - 18} later same-tail departures.</p>
-              )}
             </>
           ) : (
-            <>
+            !showAircraftDay ? <>
               <div className="rotation-list" style={{ marginTop: 17 }}>
                 {simulation.affectedFlights.slice(0, 18).map((impact, index) => (
                   <div className={`rotation-row ${delaySeverityClass(impact.departureDelayMinutes)}`} key={impact.flightId}>
@@ -940,11 +1087,19 @@ function ImpactPanel({
               {simulation.affectedFlights.length > 18 && (
                 <p className="method-note">Plus {simulation.affectedFlights.length - 18} more affected flights. Map routes are yellow below 45 minutes and red at 45 minutes or more.</p>
               )}
-            </>
+            </> : null
           )}
         </>
       ) : (
         <div className="empty-impact">{emptyMessage}</div>
+      )}
+      {aircraftRotation && selectedFlight && (
+        <AircraftDayTimeline
+          rotation={aircraftRotation}
+          selectedFlight={selectedFlight}
+          simulation={simulation}
+          showRecorded={delaySource === "actual"}
+        />
       )}
     </section>
   );

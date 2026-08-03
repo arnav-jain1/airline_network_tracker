@@ -118,6 +118,11 @@ export interface RecordedDownstreamLeg {
   status: RecordedLegStatus;
 }
 
+export interface RecordedDepartureObservation {
+  delayMinutes: number | null;
+  status: RecordedLegStatus;
+}
+
 export interface RecordedReplayResult {
   modeled: SimulationResult;
   downstreamLegs: RecordedDownstreamLeg[];
@@ -135,6 +140,16 @@ export interface RecordedReplayResult {
     modeledDownstreamDelayMinutes: number;
     recordedDelayedAmongModeledCount: number;
   };
+}
+
+export interface AircraftDayRotation {
+  /** Every flight reporting the selected aircraft tail, ordered for the day. */
+  flights: Flight[];
+  /** Selected flight position within flights, or -1 when it is unavailable. */
+  selectedIndex: number;
+  /** Selected flight plus the valid forward nextFlightId chain. */
+  linkedFlightIds: string[];
+  tail: string | null;
 }
 
 interface PropagationRun {
@@ -193,6 +208,71 @@ export function getActualDelaySeedMinutes(
   }
 
   return Math.max(0, delay);
+}
+
+/**
+ * Normalizes a flight's recorded departure into the status shared by replay
+ * summaries and the full aircraft-day timeline.
+ */
+export function getRecordedDepartureObservation(
+  flight: Pick<
+    Flight,
+    | "actualDepartureDelay"
+    | "actualDeparture"
+    | "scheduledDeparture"
+    | "cancelled"
+    | "diverted"
+  >,
+): RecordedDepartureObservation {
+  const delayMinutes = isFiniteNumber(flight.actualDepartureDelay)
+    ? flight.actualDepartureDelay
+    : isFiniteNumber(flight.actualDeparture)
+      ? getActualDelaySeedMinutes(flight)
+      : null;
+  const status: RecordedLegStatus = flight.cancelled
+    ? "cancelled"
+    : flight.diverted
+      ? "diverted"
+      : delayMinutes == null
+        ? "unknown"
+        : delayMinutes > EPSILON
+          ? "delayed"
+          : "on-time-or-early";
+
+  return { delayMinutes, status };
+}
+
+/**
+ * Returns the selected aircraft's complete carrier-day schedule while keeping
+ * the model's valid linked rotation separate from same-tail context after a
+ * broken airport/timing link.
+ */
+export function getAircraftDayRotation(
+  flights: readonly Flight[],
+  selectedId: string,
+): AircraftDayRotation {
+  const flightById = indexFlights(flights);
+  const selected = flightById.get(selectedId);
+  if (!selected) {
+    return { flights: [], selectedIndex: -1, linkedFlightIds: [], tail: null };
+  }
+
+  const aircraftFlights = selected.tail
+    ? flights
+        .filter((flight) => flight.tail === selected.tail)
+        .sort(compareFlights)
+    : [selected];
+  const linkedFlightIds = [
+    selected.id,
+    ...traceLinkedDownstreamFlights(flightById, selected).map((flight) => flight.id),
+  ];
+
+  return {
+    flights: aircraftFlights,
+    selectedIndex: aircraftFlights.findIndex((flight) => flight.id === selected.id),
+    linkedFlightIds,
+    tail: selected.tail,
+  };
 }
 
 /**
@@ -284,36 +364,9 @@ export function compareRecordedReplay(
   );
 
   if (selected && !selected.cancelled && !selected.diverted) {
-    const visited = new Set<string>([selected.id]);
-    let current = selected;
-
-    while (current.nextFlightId) {
-      const next = flightById.get(current.nextFlightId);
-      if (
-        !next
-        || visited.has(next.id)
-        || !current.tail
-        || !next.tail
-        || next.tail !== current.tail
-        || next.origin !== current.destination
-        || next.scheduledDeparture + EPSILON < current.scheduledDeparture
-      ) {
-        break;
-      }
-
-      visited.add(next.id);
-      const recordedDelay = isFiniteNumber(next.actualDepartureDelay)
-        ? next.actualDepartureDelay
-        : null;
-      const status: RecordedLegStatus = next.cancelled
-        ? "cancelled"
-        : next.diverted
-          ? "diverted"
-          : recordedDelay == null
-            ? "unknown"
-            : recordedDelay > EPSILON
-              ? "delayed"
-              : "on-time-or-early";
+    for (const next of traceLinkedDownstreamFlights(flightById, selected)) {
+      const { delayMinutes: recordedDelay, status } =
+        getRecordedDepartureObservation(next);
       const routeKey = getRouteKey(next);
       const modeledDelayMinutes = modeled.impacts[next.id]?.departureDelayMinutes ?? 0;
 
@@ -337,10 +390,6 @@ export function compareRecordedReplay(
       if (!next.cancelled && recordedDelay != null && recordedDelay > EPSILON) {
         recordedRouteSet.add(routeKey);
       }
-      if (next.cancelled || next.diverted) {
-        break;
-      }
-      current = next;
     }
   }
 
@@ -725,6 +774,39 @@ function indexFlights(flights: readonly Flight[]): Map<string, Flight> {
     }
   }
   return byId;
+}
+
+function traceLinkedDownstreamFlights(
+  flightById: ReadonlyMap<string, Flight>,
+  selected: Flight,
+): Flight[] {
+  if (selected.cancelled || selected.diverted) return [];
+
+  const downstream: Flight[] = [];
+  const visited = new Set<string>([selected.id]);
+  let current = selected;
+
+  while (current.nextFlightId) {
+    const next = flightById.get(current.nextFlightId);
+    if (
+      !next
+      || visited.has(next.id)
+      || !current.tail
+      || !next.tail
+      || next.tail !== current.tail
+      || next.origin !== current.destination
+      || next.scheduledDeparture + EPSILON < current.scheduledDeparture
+    ) {
+      break;
+    }
+
+    downstream.push(next);
+    visited.add(next.id);
+    if (next.cancelled || next.diverted) break;
+    current = next;
+  }
+
+  return downstream;
 }
 
 function compareFlights(a: Flight, b: Flight): number {

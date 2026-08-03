@@ -1,13 +1,21 @@
 # Flight data preparation notes
 
-Run `npm run data:prepare` to regenerate the browser-ready files in `public/data` from the four CSV files in `work`.
+Run `npm run data:prepare` to regenerate the browser-ready files in `public/data` from the lookup files plus every `T_ONTIME_REPORTING*.csv` export in `work`. Monthly exports can remain separate; the preparation step combines their dates into one manifest.
 
 ## Source joins
 
-- `T_ONTIME_REPORTING.csv` supplies the dated flight records. It contains DOT airport IDs, but not three-letter airport codes.
+- One or more `T_ONTIME_REPORTING*.csv` files supply the dated flight records. They contain DOT airport IDs, but not three-letter airport codes. Use the same selected columns for every export. Preparation rejects files with overlapping service dates so duplicate flights cannot silently enter the rotation model.
 - `L_AIRPORT_ID.csv` maps each numeric DOT airport ID to a BTS airport description.
 - `L_AIRPORT.csv` maps BTS descriptions to three-character airport codes. Descriptions are matched case-insensitively first. The supplied files use old names for several active DOT IDs, so unmatched descriptions fall back to candidates in the same BTS city/state and are ranked deterministically by shared airport-name words and current scheduled-service metadata. A final normalized airport-name match handles the supplied `Cabarrus, NC` versus `Concord, NC` city-label change for Concord Regional (`JQF`).
 - `airports.csv` adds latitude and longitude by IATA code, with FAA local/GPS-code fallbacks for domestic airports that do not publish an IATA code (such as `JQF`). BTS descriptions remain the source of the displayed airport name, city, and state so the name and DOT ID refer to the same BTS entity.
+
+## Selected BTS columns
+
+The preparation step reads 17 columns from each on-time export:
+
+`YEAR`, `MONTH`, `DAY_OF_MONTH`, `FL_DATE`, `OP_UNIQUE_CARRIER`, `OP_CARRIER`, `TAIL_NUM`, `OP_CARRIER_FL_NUM`, `ORIGIN_AIRPORT_ID`, `DEST_AIRPORT_ID`, `CRS_DEP_TIME`, `DEP_TIME`, `CRS_ARR_TIME`, `CANCELLED`, `DIVERTED`, `CRS_ELAPSED_TIME`, and `DISTANCE`.
+
+The current source header also contains 13 columns that are not retained: `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `ARR_TIME`, `ACTUAL_ELAPSED_TIME`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, and `LATE_AIRCRAFT_DELAY`.
 
 Only airports used by an included flight are emitted to `public/data/airports.json`. A flight is omitted if it lacks any of `CRS_DEP_TIME`, `CRS_ARR_TIME`, or `CRS_ELAPSED_TIME`, or if either DOT airport ID cannot be resolved to a three-character code. Exact omission counts and metadata diagnostics are written to `public/data/diagnostics.json` on every run.
 
@@ -31,7 +39,7 @@ The supplied `L_AIRPORT_ID.csv` row for active DOT airport ID `16869` has a blan
 }
 ```
 
-Each chunk carries a `flightFields` schema and encodes `flights` as positional arrays in that exact order, avoiding repeated property names in hundreds of thousands of records. The schema is `id`, `flightNumber`, `tail`, `origin`, `destination`, `originId`, `destinationId`, `scheduledDeparture`, `scheduledArrival`, `scheduledElapsed`, `distance`, `cancelled`, `diverted`, `actualDepartureDelay`, and `nextFlightId`. The carrier is defined once at chunk level. The stable compact ID is `f` plus the source data-row number in base 36. Flight numbers remain strings; cancellation and diversion flags are booleans.
+Each chunk carries a `flightFields` schema and encodes `flights` as positional arrays in that exact order, avoiding repeated property names in hundreds of thousands of records. The schema is `id`, `flightNumber`, `tail`, `origin`, `destination`, `originId`, `destinationId`, `scheduledDeparture`, `scheduledArrival`, `scheduledElapsed`, `distance`, `cancelled`, `diverted`, `actualDepartureDelay`, and `nextFlightId`. The carrier is defined once at chunk level. The stable compact ID combines the service date with the file-local source-row number in base 36. It remains unique across non-overlapping monthly exports and an existing month's IDs do not change when another export is added. Flight numbers remain strings; cancellation and diversion flags are booleans.
 
 Clock times are integer minutes after local midnight. BTS `2400` is preserved as `1440`; clients should render it as midnight. Arrival and departure clocks are airport-local and should not be compared across different airports without time-zone information. Elapsed time and departure delay are in minutes; distance is in statute miles.
 

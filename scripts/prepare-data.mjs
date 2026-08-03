@@ -1,13 +1,19 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
+import {
+  claimServiceDate,
+  compareSourcePaths,
+  createStableFlightId,
+  summarizeDatasetPeriod,
+} from "./prepare-data-helpers.mjs";
+
 const projectRoot = resolve(import.meta.dirname, "..");
 const workDir = join(projectRoot, "work");
 const outputDir = join(projectRoot, "public", "data");
-const sourceFile = join(workDir, "T_ONTIME_REPORTING.csv");
 const airportIdFile = join(workDir, "L_AIRPORT_ID.csv");
 const airportCodeFile = join(workDir, "L_AIRPORT.csv");
 const airportMetadataFile = join(workDir, "airports.csv");
@@ -517,7 +523,22 @@ async function endStreams(streams) {
 }
 
 async function main() {
-  for (const inputFile of [sourceFile, airportIdFile, airportCodeFile, airportMetadataFile]) {
+  await mkdir(workDir, { recursive: true });
+  const sourceFiles = (await readdir(workDir, { withFileTypes: true }))
+    .filter((entry) =>
+      entry.isFile() && /^T_ONTIME_REPORTING.*\.csv$/i.test(entry.name))
+    .map((entry) => join(workDir, entry.name))
+    .sort(compareSourcePaths);
+  if (sourceFiles.length === 0) {
+    throw new Error(`No T_ONTIME_REPORTING*.csv files found in ${workDir}`);
+  }
+
+  for (const inputFile of [
+    ...sourceFiles,
+    airportIdFile,
+    airportCodeFile,
+    airportMetadataFile,
+  ]) {
     await stat(inputFile);
   }
 
@@ -550,134 +571,140 @@ async function main() {
   const dateStreams = new Map();
   const dateTempFiles = new Map();
   const dates = new Set();
+  const sourceFileByDate = new Map();
 
-  await mkdir(workDir, { recursive: true });
   const temporaryDir = await mkdtemp(join(workDir, ".prepare-data-"));
 
   try {
-    await forEachCsvRow(sourceFile, SOURCE_FIELDS, async (values, indexes, sourceRowNumber) => {
-      diagnostics.sourceRows += 1;
-      const date = parseDate(values, indexes);
-      if (date === null) {
-        diagnostics.skippedInvalidDate += 1;
-        return;
-      }
+    for (const sourceFile of sourceFiles) {
+      await forEachCsvRow(sourceFile, SOURCE_FIELDS, async (values, indexes, sourceRowNumber) => {
+        diagnostics.sourceRows += 1;
+        const date = parseDate(values, indexes);
+        if (date === null) {
+          diagnostics.skippedInvalidDate += 1;
+          return;
+        }
 
-      const carrier =
-        nullableString(values[indexes.OP_UNIQUE_CARRIER]) ?? nullableString(values[indexes.OP_CARRIER]);
-      if (carrier === null) {
-        diagnostics.skippedMissingCarrier += 1;
-        return;
-      }
+        claimServiceDate(sourceFileByDate, date, sourceFile);
 
-      const scheduledDepartureResult = parseHhmm(values[indexes.CRS_DEP_TIME]);
-      const actualDepartureResult = parseHhmm(values[indexes.DEP_TIME]);
-      const scheduledArrivalResult = parseHhmm(values[indexes.CRS_ARR_TIME]);
-      for (const result of [
-        scheduledDepartureResult,
-        actualDepartureResult,
-        scheduledArrivalResult,
-      ]) {
-        if (result.invalid) diagnostics.invalidHhmmValueCount += 1;
-        if (result.used2400) diagnostics.hhmm2400ValueCount += 1;
-      }
+        const carrier =
+          nullableString(values[indexes.OP_UNIQUE_CARRIER]) ?? nullableString(values[indexes.OP_CARRIER]);
+        if (carrier === null) {
+          diagnostics.skippedMissingCarrier += 1;
+          return;
+        }
 
-      const scheduledElapsed = finiteNumber(values[indexes.CRS_ELAPSED_TIME]);
-      if (
-        scheduledDepartureResult.value === null ||
-        scheduledArrivalResult.value === null ||
-        scheduledElapsed === null
-      ) {
-        diagnostics.skippedMissingScheduledFields += 1;
-        return;
-      }
+        const scheduledDepartureResult = parseHhmm(values[indexes.CRS_DEP_TIME]);
+        const actualDepartureResult = parseHhmm(values[indexes.DEP_TIME]);
+        const scheduledArrivalResult = parseHhmm(values[indexes.CRS_ARR_TIME]);
+        for (const result of [
+          scheduledDepartureResult,
+          actualDepartureResult,
+          scheduledArrivalResult,
+        ]) {
+          if (result.invalid) diagnostics.invalidHhmmValueCount += 1;
+          if (result.used2400) diagnostics.hhmm2400ValueCount += 1;
+        }
 
-      const originId = finiteInteger(values[indexes.ORIGIN_AIRPORT_ID]);
-      const destinationId = finiteInteger(values[indexes.DEST_AIRPORT_ID]);
-      diagnostics.airportEndpointCount += 2;
-      const originLookup = originId === null ? null : lookups.resolvedById.get(originId) ?? null;
-      const destinationLookup =
-        destinationId === null ? null : lookups.resolvedById.get(destinationId) ?? null;
+        const scheduledElapsed = finiteNumber(values[indexes.CRS_ELAPSED_TIME]);
+        if (
+          scheduledDepartureResult.value === null ||
+          scheduledArrivalResult.value === null ||
+          scheduledElapsed === null
+        ) {
+          diagnostics.skippedMissingScheduledFields += 1;
+          return;
+        }
 
-      for (const [id, lookup] of [
-        [originId, originLookup],
-        [destinationId, destinationLookup],
-      ]) {
-        if (lookup?.code) {
-          diagnostics.airportCodeMatchedEndpointCount += 1;
-          const metadata = lookups.metadataByCode.get(lookup.code);
-          if (
-            typeof metadata?.latitude === "number" &&
-            Number.isFinite(metadata.latitude) &&
-            typeof metadata.longitude === "number" &&
-            Number.isFinite(metadata.longitude)
-          ) {
-            diagnostics.coordinateMatchedEndpointCount += 1;
+        const originId = finiteInteger(values[indexes.ORIGIN_AIRPORT_ID]);
+        const destinationId = finiteInteger(values[indexes.DEST_AIRPORT_ID]);
+        diagnostics.airportEndpointCount += 2;
+        const originLookup = originId === null ? null : lookups.resolvedById.get(originId) ?? null;
+        const destinationLookup =
+          destinationId === null ? null : lookups.resolvedById.get(destinationId) ?? null;
+
+        for (const [id, lookup] of [
+          [originId, originLookup],
+          [destinationId, destinationLookup],
+        ]) {
+          if (lookup?.code) {
+            diagnostics.airportCodeMatchedEndpointCount += 1;
+            const metadata = lookups.metadataByCode.get(lookup.code);
+            if (
+              typeof metadata?.latitude === "number" &&
+              Number.isFinite(metadata.latitude) &&
+              typeof metadata.longitude === "number" &&
+              Number.isFinite(metadata.longitude)
+            ) {
+              diagnostics.coordinateMatchedEndpointCount += 1;
+            }
+          } else {
+            const key = id === null ? "missing" : String(id);
+            unresolvedAirportIds.set(key, (unresolvedAirportIds.get(key) ?? 0) + 1);
           }
-        } else {
-          const key = id === null ? "missing" : String(id);
-          unresolvedAirportIds.set(key, (unresolvedAirportIds.get(key) ?? 0) + 1);
         }
-      }
 
-      if (!originLookup?.code || !destinationLookup?.code) {
-        diagnostics.skippedUnresolvedAirport += 1;
-        return;
-      }
-
-      for (const airport of [originLookup, destinationLookup]) {
-        if (!usedAirports.has(airport.code)) {
-          const metadata = lookups.metadataByCode.get(airport.code);
-          usedAirports.set(airport.code, {
-            code: airport.code,
-            id: airport.id,
-            name: airport.name ?? metadata?.name ?? null,
-            city: airport.city ?? metadata?.city ?? null,
-            state: airport.state ?? metadata?.state ?? null,
-            latitude: metadata?.latitude ?? null,
-            longitude: metadata?.longitude ?? null,
-          });
+        if (!originLookup?.code || !destinationLookup?.code) {
+          diagnostics.skippedUnresolvedAirport += 1;
+          return;
         }
-      }
 
-      const flight = {
-        id: `f${sourceRowNumber.toString(36)}`,
-        carrier,
-        flightNumber: nullableString(values[indexes.OP_CARRIER_FL_NUM]),
-        tail: nullableString(values[indexes.TAIL_NUM]),
-        origin: originLookup.code,
-        destination: destinationLookup.code,
-        originId,
-        destinationId,
-        scheduledDeparture: scheduledDepartureResult.value,
-        scheduledArrival: scheduledArrivalResult.value,
-        scheduledElapsed,
-        distance: finiteNumber(values[indexes.DISTANCE]),
-        cancelled: flag(values[indexes.CANCELLED]),
-        diverted: flag(values[indexes.DIVERTED]),
-        actualDepartureDelay: positiveClockDelay(
-          scheduledDepartureResult.value,
-          actualDepartureResult.value,
-        ),
-        nextFlightId: null,
-      };
+        for (const airport of [originLookup, destinationLookup]) {
+          if (!usedAirports.has(airport.code)) {
+            const metadata = lookups.metadataByCode.get(airport.code);
+            usedAirports.set(airport.code, {
+              code: airport.code,
+              id: airport.id,
+              name: airport.name ?? metadata?.name ?? null,
+              city: airport.city ?? metadata?.city ?? null,
+              state: airport.state ?? metadata?.state ?? null,
+              latitude: metadata?.latitude ?? null,
+              longitude: metadata?.longitude ?? null,
+            });
+          }
+        }
 
-      if (flight.tail === null) diagnostics.missingTailCount += 1;
-      diagnostics.includedFlights += 1;
-      dates.add(date);
+        const flight = {
+          // The date makes IDs unique across non-overlapping exports, while the
+          // file-local row keeps an existing month stable when another is added.
+          id: createStableFlightId(date, sourceRowNumber),
+          carrier,
+          flightNumber: nullableString(values[indexes.OP_CARRIER_FL_NUM]),
+          tail: nullableString(values[indexes.TAIL_NUM]),
+          origin: originLookup.code,
+          destination: destinationLookup.code,
+          originId,
+          destinationId,
+          scheduledDeparture: scheduledDepartureResult.value,
+          scheduledArrival: scheduledArrivalResult.value,
+          scheduledElapsed,
+          distance: finiteNumber(values[indexes.DISTANCE]),
+          cancelled: flag(values[indexes.CANCELLED]),
+          diverted: flag(values[indexes.DIVERTED]),
+          actualDepartureDelay: positiveClockDelay(
+            scheduledDepartureResult.value,
+            actualDepartureResult.value,
+          ),
+          nextFlightId: null,
+        };
 
-      let stream = dateStreams.get(date);
-      if (!stream) {
-        const tempFile = join(temporaryDir, `${date}.ndjson`);
-        stream = createWriteStream(tempFile, { encoding: "utf8" });
-        dateStreams.set(date, stream);
-        dateTempFiles.set(date, tempFile);
-      }
+        if (flight.tail === null) diagnostics.missingTailCount += 1;
+        diagnostics.includedFlights += 1;
+        dates.add(date);
 
-      if (!stream.write(`${JSON.stringify(flight)}\n`)) {
-        await once(stream, "drain");
-      }
-    });
+        let stream = dateStreams.get(date);
+        if (!stream) {
+          const tempFile = join(temporaryDir, `${date}.ndjson`);
+          stream = createWriteStream(tempFile, { encoding: "utf8" });
+          dateStreams.set(date, stream);
+          dateTempFiles.set(date, tempFile);
+        }
+
+        if (!stream.write(`${JSON.stringify(flight)}\n`)) {
+          await once(stream, "drain");
+        }
+      });
+    }
 
     await endStreams(dateStreams);
 
@@ -737,15 +764,14 @@ async function main() {
       "utf8",
     );
 
-    const years = new Set(sortedDates.map((date) => Number(date.slice(0, 4))));
-    const months = new Set(sortedDates.map((date) => Number(date.slice(5, 7))));
+    const datasetPeriod = summarizeDatasetPeriod(sortedDates);
     const manifest = {
       schemaVersion: 1,
       generatedAt,
       dataset: {
-        sourceFile: basename(sourceFile),
-        year: years.size === 1 ? [...years][0] : null,
-        month: months.size === 1 ? [...months][0] : null,
+        sourceFile: sourceFiles.length === 1 ? basename(sourceFiles[0]) : null,
+        sourceFiles: sourceFiles.map((filePath) => basename(filePath)),
+        ...datasetPeriod,
       },
       dates: sortedDates,
       carriers: [...carriers].sort(),

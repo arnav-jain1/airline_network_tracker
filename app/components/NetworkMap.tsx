@@ -372,7 +372,15 @@ export function NetworkMap({
     );
     const geographyPath = geoPath(projection);
     const compactInsets = size.width < 620;
-    const alaskaOffsetY = compactInsets ? -18 : -24;
+    // Keep the move visibly north at full size, but scale it down continuously
+    // on narrow canvases so Alaska never overlaps the West Coast.
+    const alaskaOffsetY = -Math.min(50, Math.round(projection.scale() * 0.05));
+    const [projectionX, projectionY] = projection.translate();
+    const alaskaProjection = geoAlbersUsa()
+      .scale(projection.scale())
+      .translate([projectionX, projectionY + alaskaOffsetY])
+      .precision(projection.precision());
+    const alaskaGeographyPath = geoPath(alaskaProjection);
     const caribbeanBox: InsetBox = compactInsets
       ? { x: size.width - 171, y: size.height - 88, width: 126, height: 59, label: "CARIBBEAN" }
       : { x: size.width - 212, y: size.height - 108, width: 160, height: 76, label: "CARIBBEAN" };
@@ -386,12 +394,12 @@ export function NetworkMap({
     const territoryAirports: Airport[] = [];
 
     for (const [code, airport] of airports) {
-      const point = projection([airport.longitude, airport.latitude]);
+      const airportProjection = airport.state === "AK"
+        ? alaskaProjection
+        : projection;
+      const point = airportProjection([airport.longitude, airport.latitude]);
       if (point) {
-        projectedAirports.set(code, [
-          point[0],
-          point[1] + (airport.state === "AK" ? alaskaOffsetY : 0),
-        ]);
+        projectedAirports.set(code, point as [number, number]);
       } else if (activeAirportCodes.has(code)) {
         territoryAirports.push(airport);
       }
@@ -430,10 +438,10 @@ export function NetworkMap({
 
     return {
       projection,
+      alaskaProjection,
       statesPath: svgCanvasPath(geographyPath(statesWithoutAlaska)),
-      alaskaPath: alaska ? svgCanvasPath(geographyPath(alaska)) : null,
+      alaskaPath: alaska ? svgCanvasPath(alaskaGeographyPath(alaska)) : null,
       stateLinesPath: svgCanvasPath(geographyPath(stateLines)),
-      alaskaOffsetY,
       projectedAirports,
       usedBoxes: [...usedBoxes],
       routeGeometry,
@@ -677,6 +685,9 @@ export function NetworkMap({
       && (!alaska || mapGeometry.alaskaPath)
       ? null
       : geoPath(mapGeometry.projection, context);
+    const fallbackAlaskaPath = alaska && !mapGeometry.alaskaPath
+      ? geoPath(mapGeometry.alaskaProjection, context)
+      : null;
     if (mapGeometry.statesPath) {
       context.fill(mapGeometry.statesPath);
     } else {
@@ -686,16 +697,17 @@ export function NetworkMap({
     }
 
     if (alaska) {
-      context.save();
-      context.translate(0, mapGeometry.alaskaOffsetY);
+      context.strokeStyle = "rgba(48, 72, 94, 0.68)";
+      context.lineWidth = 0.75 / view.scale;
       if (mapGeometry.alaskaPath) {
         context.fill(mapGeometry.alaskaPath);
+        context.stroke(mapGeometry.alaskaPath);
       } else {
         context.beginPath();
-        fallbackPath?.(alaska);
+        fallbackAlaskaPath?.(alaska);
         context.fill();
+        context.stroke();
       }
-      context.restore();
     }
 
     context.strokeStyle = "rgba(48, 72, 94, 0.68)";
