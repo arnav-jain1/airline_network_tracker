@@ -6,6 +6,9 @@
  */
 
 export const MINUTES_PER_DAY = 24 * 60;
+export const SEVERE_DELAY_THRESHOLD_MINUTES = 45;
+
+export type DelaySeverity = "none" | "moderate" | "severe";
 
 export interface Flight {
   id: string;
@@ -140,6 +143,26 @@ interface PropagationRun {
 }
 
 const EPSILON = 1e-9;
+
+/**
+ * Shared visual severity rule: positive delays below 45 minutes are moderate;
+ * delays of 45 minutes or more are severe. Zero, negative, and invalid values
+ * have no delay severity.
+ */
+export function getDelaySeverity(
+  delayMinutes: number | null | undefined,
+): DelaySeverity {
+  if (
+    typeof delayMinutes !== "number"
+    || !Number.isFinite(delayMinutes)
+    || delayMinutes <= 0
+  ) {
+    return "none";
+  }
+  return delayMinutes < SEVERE_DELAY_THRESHOLD_MINUTES
+    ? "moderate"
+    : "severe";
+}
 
 export function getRouteKey(flight: Pick<Flight, "origin" | "destination">): string {
   return `${flight.origin}-${flight.destination}`;

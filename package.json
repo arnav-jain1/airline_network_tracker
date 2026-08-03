@@ -1,5 +1,5 @@
 {
-  "name": "turnline-network-simulator",
+  "name": "aircraft-delay-visualizer",
   "version": "0.1.0",
   "private": true,
   "engines": {

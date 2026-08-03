@@ -1,6 +1,6 @@
-# Turnline
+# Aircraft Delay Visualizer
 
-Turnline turns a BTS on-time reporting export into an interactive domestic airline network. Pick a service date and operating carrier, zoom and pan through the network, select a route and exact departure, then simulate a custom or recorded departure delay. Airport markers appear progressively as the view gets closer, with the carrier-day's largest stations visible first. The map marks affected routes in red as delay propagates through the aircraft's later legs. An airport ground-stop mode lets you choose a revealed airport marker, holds departures inside a selected local-time window, and propagates those aircraft delays too.
+Aircraft Delay Visualizer turns a BTS on-time reporting export into an interactive domestic airline network. Pick a service date and operating carrier, zoom and pan through the network, select a route and exact departure, then simulate a custom or recorded departure delay. Airport markers appear progressively as the view gets closer, with the carrier-day's largest stations visible first. The map marks affected routes in yellow or red as delay propagates through the aircraft's later legs. An airport ground-stop mode lets you choose a revealed airport marker, holds departures inside a selected local-time window, and propagates those aircraft delays too.
 
 ## Data
 
@@ -35,3 +35,9 @@ npm test
 ```
 
 `npm test` builds the deployable site and checks both the disruption engine and compact-data contract.
+
+## GitHub Pages
+
+The repository includes a GitHub Actions workflow that builds a static export and deploys `dist/client` to GitHub Pages whenever `main` is pushed. It automatically configures the repository subpath for project sites, so application bundles, the social image, and all flight-data requests work below `/<repository-name>/`.
+
+In the repository's **Settings > Pages**, choose **GitHub Actions** as the source. The workflow can also be started manually from the Actions tab.

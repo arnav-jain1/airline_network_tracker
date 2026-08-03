@@ -8,6 +8,7 @@ import {
   type SimulationResult,
   compareRecordedReplay,
   getActualDelaySeedMinutes,
+  getDelaySeverity,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../lib/simulation";
@@ -54,6 +55,14 @@ type ChunkPayload = {
 
 type ScenarioMode = "flight" | "ground";
 type DelaySource = "planned" | "actual";
+
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+function publicPath(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${BASE_PATH}${normalizedPath}`;
+}
 
 const AIRLINE_NAMES: Record<string, string> = {
   "9E": "Endeavor Air",
@@ -114,6 +123,21 @@ function plural(value: number, singular: string, pluralForm = `${singular}s`) {
   return `${value.toLocaleString()} ${value === 1 ? singular : pluralForm}`;
 }
 
+function delaySeverityClass(delayMinutes: number | null | undefined) {
+  return `delay-${getDelaySeverity(delayMinutes)}`;
+}
+
+function addMaximumRouteDelay(
+  routeDelays: Map<string, number>,
+  routeKey: string,
+  delayMinutes: number | null | undefined,
+) {
+  if (typeof delayMinutes !== "number" || !Number.isFinite(delayMinutes) || delayMinutes <= 0) {
+    return;
+  }
+  routeDelays.set(routeKey, Math.max(routeDelays.get(routeKey) ?? 0, delayMinutes));
+}
+
 function inflateFlights(payload: ChunkPayload): Flight[] {
   if (!payload.flightFields) return payload.flights as Flight[];
   return payload.flights.map((row) => {
@@ -146,11 +170,11 @@ export function NetworkWorkbench() {
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([
-      fetch("/data/manifest.json", { signal: controller.signal }).then((response) => {
+      fetch(publicPath("/data/manifest.json"), { signal: controller.signal }).then((response) => {
         if (!response.ok) throw new Error("The BTS data index could not be loaded.");
         return response.json() as Promise<Manifest>;
       }),
-      fetch("/data/airports.json", { signal: controller.signal }).then((response) => {
+      fetch(publicPath("/data/airports.json"), { signal: controller.signal }).then((response) => {
         if (!response.ok) throw new Error("The airport map could not be loaded.");
         return response.json() as Promise<AirportPayload>;
       }),
@@ -183,7 +207,7 @@ export function NetworkWorkbench() {
     const controller = new AbortController();
     const chunk = manifest.chunks.find((item) => item.date === date && item.carrier === carrier);
     const path = chunk?.path ?? `/data/days/${date}/${carrier}.json`;
-    fetch(path, { signal: controller.signal })
+    fetch(publicPath(path), { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`No flights are available for ${carrier} on ${date}.`);
         return response.json() as Promise<ChunkPayload>;
@@ -290,14 +314,21 @@ export function NetworkWorkbench() {
     return simulateGroundStop(flights, effectiveGroundAirport, groundStart, groundEnd, 35);
   }, [delayMinutes, delaySource, effectiveGroundAirport, flights, groundEnd, groundStart, groundWindowValid, recordedReplay, scenarioMode, selectedFlight]);
 
-  const impactedRouteKeys = useMemo(
-    () => new Set(simulation?.delayedRouteKeys ?? []),
-    [simulation],
-  );
-  const recordedRouteKeys = useMemo(
-    () => new Set(recordedReplay?.recordedDelayedRouteKeys ?? []),
-    [recordedReplay],
-  );
+  const modeledRouteDelays = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const impact of simulation?.affectedFlights ?? []) {
+      addMaximumRouteDelay(result, impact.routeKey, impact.departureDelayMinutes);
+    }
+    return result;
+  }, [simulation]);
+  const recordedRouteDelays = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const leg of recordedReplay?.downstreamLegs ?? []) {
+      if (leg.status === "cancelled") continue;
+      addMaximumRouteDelay(result, leg.routeKey, leg.recordedDepartureDelayMinutes);
+    }
+    return result;
+  }, [recordedReplay]);
   const activeAirportCount = useMemo(
     () => new Set(flights.flatMap((flight) => [flight.origin, flight.destination])).size,
     [flights],
@@ -368,7 +399,7 @@ export function NetworkWorkbench() {
       <main className="error-screen">
         <div className="error-card">
           <div className="brand-mark" aria-hidden="true"><span /></div>
-          <strong>Turnline could not open the dataset</strong>
+          <strong>Aircraft Delay Visualizer could not open the dataset</strong>
           <span>{error}</span>
           <button type="button" onClick={() => window.location.reload()}>Try again</button>
         </div>
@@ -394,7 +425,7 @@ export function NetworkWorkbench() {
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><span /></div>
           <div className="brand-copy">
-            <strong>TURNLINE</strong>
+            <strong>Aircraft Delay Visualizer</strong>
             <span>Network disruption simulator</span>
           </div>
         </div>
@@ -436,8 +467,9 @@ export function NetworkWorkbench() {
             <div className="map-legend" aria-label="Map legend">
               <span className="legend-item"><i className="legend-line" />Scheduled</span>
               <span className="legend-item"><i className="legend-line selected" />Selected</span>
-              <span className="legend-item"><i className="legend-line impacted" />{recordedReplay ? "Modeled delay" : "Delayed"}</span>
-              {recordedReplay && <span className="legend-item"><i className="legend-line recorded" />Recorded late</span>}
+              <span className="legend-item"><i className="legend-line delay-moderate" />Delay &lt;45m</span>
+              <span className="legend-item"><i className="legend-line delay-severe" />Delay 45m+</span>
+              {recordedReplay && <span className="legend-item"><i className="legend-line recorded" />Recorded = dashed</span>}
               {scenarioMode === "ground" && <span className="legend-item"><i className="legend-airport" />Airport</span>}
             </div>
           </div>
@@ -461,8 +493,8 @@ export function NetworkWorkbench() {
               routes={routes}
               selectedRouteKey={selectedRouteKey}
               selectedAirportCode={scenarioMode === "ground" ? effectiveGroundAirport : null}
-              impactedRouteKeys={impactedRouteKeys}
-              recordedRouteKeys={recordedRouteKeys}
+              modeledRouteDelays={modeledRouteDelays}
+              recordedRouteDelays={recordedRouteDelays}
               selectionMode={scenarioMode === "ground" ? "airport" : "route"}
               onSelectRoute={selectRoute}
               onSelectAirport={(airport) => {
@@ -476,7 +508,7 @@ export function NetworkWorkbench() {
             <div className="metric"><span>Scheduled flights</span><strong>{flights.length.toLocaleString()}</strong></div>
             <div className="metric"><span>Active airports</span><strong>{activeAirportCount}</strong></div>
             <div className="metric"><span>Aircraft tails</span><strong>{tailCount.toLocaleString()}</strong></div>
-            <div className="metric"><span>{recordedReplay ? "Modeled impact" : "Scenario impact"}</span><strong className={simulation?.summary.affectedFlightCount ? "impact-value" : ""}>{simulation ? plural(simulation.summary.affectedFlightCount, "flight") : "None"}</strong></div>
+            <div className="metric"><span>{recordedReplay ? "Modeled impact" : "Scenario impact"}</span><strong className={simulation?.summary.affectedFlightCount ? `impact-value ${delaySeverityClass(simulation.summary.maxDelayMinutes)}` : ""}>{simulation ? plural(simulation.summary.affectedFlightCount, "flight") : "None"}</strong></div>
           </div>
         </section>
 
@@ -586,6 +618,8 @@ function FlightDelayPanel({
     360,
     Math.ceil(delayMinutes / 60) * 60,
   );
+  const selectedDelayClass = delaySeverityClass(delayMinutes);
+  const observedDelayClass = delaySeverityClass(observedDelay);
   return (
     <>
       <section className="panel-section">
@@ -639,7 +673,7 @@ function FlightDelayPanel({
                     <strong>Flight {flight.flightNumber}</strong>
                     <span>{flight.tail || "Tail unavailable"} · {Math.round(flight.distance).toLocaleString()} mi</span>
                   </span>
-                  <span className={`flight-status${observed > 0 ? " observed-delay" : ""}`}>
+                  <span className={`flight-status ${delaySeverityClass(observed)}`}>
                     {flight.cancelled ? "CANCELLED" : flight.diverted ? "DIVERTED" : observed > 0 ? `+${Math.round(observed)}m` : "ON TIME"}
                   </span>
                 </button>
@@ -652,7 +686,7 @@ function FlightDelayPanel({
       {selectedFlight && (
         <section className="panel-section">
           <div className="section-label"><span>3 · Introduce delay</span><span>{delaySource === "actual" ? "Recorded" : "Custom"}</span></div>
-          <div className="delay-control">
+          <div className={`delay-control ${selectedDelayClass}`}>
             <div className="delay-readout"><strong>+{delayMinutes}m</strong><span>departure delay</span></div>
             <input
               type="range"
@@ -675,7 +709,7 @@ function FlightDelayPanel({
                   key={value}
                   type="button"
                   aria-pressed={delaySource === "planned" && delayMinutes === value}
-                  className={delaySource === "planned" && delayMinutes === value ? "active" : ""}
+                  className={`${delaySeverityClass(value)}${delaySource === "planned" && delayMinutes === value ? " active" : ""}`}
                   onClick={() => onDelayChange(value)}
                 >+{value}m</button>
               ))}
@@ -683,7 +717,7 @@ function FlightDelayPanel({
           </div>
           <button
             type="button"
-            className={`actual-delay-button${delaySource === "actual" ? " active" : ""}`}
+            className={`actual-delay-button ${observedDelayClass}${delaySource === "actual" ? " active" : ""}`}
             aria-pressed={delaySource === "actual"}
             disabled={observedDelay <= 0}
             onClick={onReplayActual}
@@ -791,6 +825,16 @@ function ImpactPanel({
   const replayExceptions = replaySummary
     ? replaySummary.cancelledCount + replaySummary.divertedCount
     : 0;
+  const simulationDelayClass = delaySeverityClass(summary?.maxDelayMinutes);
+  const maximumModeledReplayDelay = recordedReplay
+    ? recordedReplay.downstreamLegs.reduce(
+        (maximum, leg) => Math.max(
+          maximum,
+          leg.modeledStatus === "delayed" ? leg.modeledDelayMinutes : 0,
+        ),
+        0,
+      )
+    : 0;
   return (
     <section className="panel-section">
       <div className="section-label">
@@ -810,7 +854,7 @@ function ImpactPanel({
       </p>
       {simulation && summary?.affectedFlightCount ? (
         <>
-          <div className="impact-summary">
+          <div className={`impact-summary ${simulationDelayClass}`}>
             <div className="impact-card"><strong>{summary.affectedFlightCount}</strong><span>Flights</span></div>
             <div className="impact-card"><strong>{summary.propagatedFlightCount}</strong><span>Propagated</span></div>
             <div className="impact-card"><strong>{Math.round(summary.totalDelayMinutes)}</strong><span>Total min</span></div>
@@ -819,12 +863,12 @@ function ImpactPanel({
           {recordedReplay && replaySummary ? (
             <>
               <div className="replay-comparison">
-                <div className="replay-side modeled">
+                <div className={`replay-side modeled ${delaySeverityClass(maximumModeledReplayDelay)}`}>
                   <span>Modeled later ripple</span>
                   <strong>{plural(replaySummary.modeledDelayedLegCount, "flight")}</strong>
                   <small>{Math.round(replaySummary.modeledDownstreamDelayMinutes).toLocaleString()} carried delay min</small>
                 </div>
-                <div className="replay-side recorded">
+                <div className={`replay-side recorded ${delaySeverityClass(replaySummary.maxRecordedDelayMinutes)}`}>
                   <span>Recorded same-tail outcome</span>
                   <strong>
                     {replaySummary.downstreamLegCount === 0
@@ -856,7 +900,7 @@ function ImpactPanel({
                       <span className="replay-delay-pair">
                         <span>
                           <small>Model</small>
-                          <strong className={leg.modeledStatus === "delayed" ? "modeled-delay" : leg.modeledStatus === "stopped" ? "model-stopped" : ""}>
+                          <strong className={leg.modeledStatus === "delayed" ? delaySeverityClass(leg.modeledDelayMinutes) : leg.modeledStatus === "stopped" ? "model-stopped" : ""}>
                             {leg.modeledStatus === "delayed"
                               ? `+${Math.round(leg.modeledDelayMinutes)}m`
                               : leg.modeledStatus === "stopped"
@@ -866,7 +910,7 @@ function ImpactPanel({
                         </span>
                         <span>
                           <small>Recorded</small>
-                          <strong className={leg.status}>{recordedLegLabel(leg)}</strong>
+                          <strong className={`${leg.status} ${delaySeverityClass(leg.recordedDepartureDelayMinutes)}`}>{recordedLegLabel(leg)}</strong>
                         </span>
                       </span>
                     </div>
@@ -883,7 +927,7 @@ function ImpactPanel({
             <>
               <div className="rotation-list" style={{ marginTop: 17 }}>
                 {simulation.affectedFlights.slice(0, 18).map((impact, index) => (
-                  <div className="rotation-row" key={impact.flightId}>
+                  <div className={`rotation-row ${delaySeverityClass(impact.departureDelayMinutes)}`} key={impact.flightId}>
                     <span className="rotation-index">{index + 1}</span>
                     <span className="rotation-flight">
                       <strong>{impact.origin} → {impact.destination} · Flight {impact.flightNumber}</strong>
@@ -894,7 +938,7 @@ function ImpactPanel({
                 ))}
               </div>
               {simulation.affectedFlights.length > 18 && (
-                <p className="method-note">Plus {simulation.affectedFlights.length - 18} more affected flights. All delayed routes remain marked in red on the map.</p>
+                <p className="method-note">Plus {simulation.affectedFlights.length - 18} more affected flights. Map routes are yellow below 45 minutes and red at 45 minutes or more.</p>
               )}
             </>
           )}

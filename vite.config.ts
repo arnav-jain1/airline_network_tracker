@@ -11,6 +11,15 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
+const configuredBasePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim() ?? "";
+const basePath = configuredBasePath === "/"
+  ? ""
+  : configuredBasePath.replace(/\/$/, "");
+
+if (basePath && !basePath.startsWith("/")) {
+  throw new Error("NEXT_PUBLIC_BASE_PATH must be empty or start with '/'.");
+}
+
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
@@ -44,6 +53,10 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    // Vinext's static prerenderer expects the application route at `/`. Vite's
+    // asset base still lets the exported site live under a GitHub Pages repo
+    // path, while client data requests use the same public base path.
+    base: basePath ? `${basePath}/` : undefined,
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

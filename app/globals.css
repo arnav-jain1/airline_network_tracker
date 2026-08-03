@@ -1,19 +1,38 @@
+@font-face {
+  font-family: "Geist Local";
+  src: url("/fonts/geist-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono Local";
+  src: url("/fonts/geist-mono-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
-  --page: #07101e;
-  --surface: #0b1526;
-  --surface-raised: #101c30;
-  --surface-soft: #142238;
-  --line: rgba(165, 193, 222, 0.15);
-  --line-strong: rgba(165, 193, 222, 0.26);
-  --ink: #edf6ff;
-  --ink-soft: #b9cade;
-  --muted: #7f93aa;
-  --blue: #62b9f5;
-  --blue-soft: #bce7ff;
-  --amber: #f6c96b;
-  --red: #ff625a;
-  --red-soft: #ffb0aa;
-  --green: #68d8b4;
+  color-scheme: light;
+  --font-geist-sans: "Geist Local", "Segoe UI", sans-serif;
+  --font-geist-mono: "Geist Mono Local", "Cascadia Mono", monospace;
+  --page: #f3f6fa;
+  --surface: #ffffff;
+  --surface-raised: #f8fafc;
+  --surface-soft: #e8f1f8;
+  --line: rgba(33, 55, 77, 0.17);
+  --line-strong: rgba(33, 55, 77, 0.32);
+  --ink: #14283c;
+  --ink-soft: #334c64;
+  --muted: #53697f;
+  --blue: #096b9f;
+  --blue-soft: #075985;
+  --amber: #875700;
+  --red: #c43b35;
+  --red-soft: #a6312c;
+  --green: #167258;
   --radius-lg: 22px;
   --radius-md: 14px;
   --radius-sm: 9px;
@@ -31,7 +50,7 @@ html {
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 12% -12%, rgba(48, 125, 183, 0.15), transparent 34rem),
+    radial-gradient(circle at 12% -12%, rgba(34, 121, 174, 0.12), transparent 34rem),
     var(--page);
   color: var(--ink);
   font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
@@ -71,7 +90,7 @@ canvas:focus-visible {
   min-height: 72px;
   padding: 11px 22px;
   border-bottom: 1px solid var(--line);
-  background: rgba(7, 16, 30, 0.9);
+  background: rgba(250, 252, 254, 0.92);
   backdrop-filter: blur(18px);
 }
 
@@ -149,7 +168,8 @@ canvas:focus-visible {
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: rgba(17, 29, 49, 0.72);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(34, 53, 72, 0.08);
 }
 
 .control-field {
@@ -214,7 +234,7 @@ canvas:focus-visible {
   content: "";
   border-radius: 50%;
   background: var(--green);
-  box-shadow: 0 0 0 4px rgba(104, 216, 180, 0.12);
+  box-shadow: 0 0 0 4px rgba(22, 114, 88, 0.13);
 }
 
 .workspace {
@@ -295,15 +315,23 @@ canvas:focus-visible {
   background: var(--amber);
 }
 
-.legend-line.impacted {
+.legend-line.delay-moderate,
+.legend-line.delay-severe {
   height: 3px;
+}
+
+.legend-line.delay-moderate {
+  background: var(--amber);
+}
+
+.legend-line.delay-severe {
   background: var(--red);
 }
 
 .legend-line.recorded {
   background: repeating-linear-gradient(
     90deg,
-    var(--amber) 0 5px,
+    var(--ink-soft) 0 5px,
     transparent 5px 9px
   );
 }
@@ -314,7 +342,7 @@ canvas:focus-visible {
   height: 8px;
   border: 2px solid var(--amber);
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(246, 201, 107, 0.12);
+  box-shadow: 0 0 0 3px rgba(135, 87, 0, 0.14);
 }
 
 .network-map {
@@ -324,12 +352,14 @@ canvas:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background:
-    linear-gradient(rgba(81, 124, 168, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(81, 124, 168, 0.045) 1px, transparent 1px),
-    radial-gradient(circle at 45% 35%, rgba(30, 79, 119, 0.13), transparent 55%),
-    #091322;
+    linear-gradient(rgba(51, 83, 112, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(51, 83, 112, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 45% 35%, rgba(54, 126, 174, 0.11), transparent 55%),
+    #e7eef5;
   background-size: 54px 54px, 54px 54px, auto, auto;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 10px 28px rgba(38, 59, 79, 0.08);
   touch-action: pan-y;
   user-select: none;
 }
@@ -376,6 +406,11 @@ canvas:focus-visible {
   pointer-events: auto;
 }
 
+.airport-marker.selectable:focus-visible {
+  border-radius: 50%;
+  outline-offset: -2px;
+}
+
 .airport-marker.displaced::before {
   position: absolute;
   top: 50%;
@@ -383,7 +418,7 @@ canvas:focus-visible {
   width: var(--leader-length);
   height: 1px;
   content: "";
-  background: linear-gradient(90deg, rgba(164, 188, 218, 0.58), rgba(164, 188, 218, 0.12));
+  background: linear-gradient(90deg, rgba(59, 82, 105, 0.62), rgba(59, 82, 105, 0.14));
   pointer-events: none;
   transform: rotate(var(--leader-angle));
   transform-origin: 0 50%;
@@ -395,31 +430,43 @@ canvas:focus-visible {
   left: 50%;
   width: var(--airport-size);
   height: var(--airport-size);
-  border: 1px solid rgba(5, 13, 26, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 50%;
-  background: #d6eeff;
-  box-shadow: 0 0 0 2px rgba(214, 238, 255, 0.08);
+  background: var(--blue);
+  box-shadow: 0 0 0 2px rgba(9, 107, 159, 0.16);
   transform: translate(-50%, -50%);
   transition: box-shadow 150ms ease, transform 150ms ease;
 }
 
-.airport-marker.impacted .airport-dot {
+.airport-marker.delay-moderate .airport-dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 5px rgba(135, 87, 0, 0.2);
+}
+
+.airport-marker.delay-severe .airport-dot {
   background: var(--red);
-  box-shadow: 0 0 0 5px rgba(255, 98, 90, 0.18);
+  box-shadow: 0 0 0 5px rgba(196, 59, 53, 0.2);
 }
 
 .airport-marker.selected .airport-dot {
   background: var(--amber);
   box-shadow:
-    0 0 0 3px rgba(9, 19, 34, 0.95),
-    0 0 0 6px rgba(246, 201, 107, 0.48);
+    0 0 0 3px rgba(255, 255, 255, 0.96),
+    0 0 0 6px rgba(135, 87, 0, 0.48);
+}
+
+.airport-marker.selected.delay-severe .airport-dot {
+  background: var(--red);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.96),
+    0 0 0 6px rgba(135, 87, 0, 0.48);
 }
 
 .airport-marker.selectable:hover .airport-dot,
 .airport-marker.selectable:focus-visible .airport-dot {
   box-shadow:
-    0 0 0 3px rgba(9, 19, 34, 0.95),
-    0 0 0 7px rgba(98, 185, 245, 0.42);
+    0 0 0 3px rgba(255, 255, 255, 0.96),
+    0 0 0 7px rgba(9, 107, 159, 0.42);
   transform: translate(-50%, -50%) scale(1.16);
 }
 
@@ -430,10 +477,11 @@ canvas:focus-visible {
   display: none;
   min-width: 27px;
   padding: 2px 4px;
-  border: 1px solid rgba(164, 188, 218, 0.18);
+  border: 1px solid rgba(33, 55, 77, 0.25);
   border-radius: 4px;
-  background: rgba(7, 14, 27, 0.84);
-  color: rgba(218, 237, 250, 0.94);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(37, 57, 76, 0.12);
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
   font-weight: 700;
@@ -447,8 +495,18 @@ canvas:focus-visible {
 }
 
 .airport-marker.selected .airport-code {
-  border-color: rgba(246, 201, 107, 0.48);
+  border-color: rgba(135, 87, 0, 0.52);
   color: var(--amber);
+}
+
+.airport-marker.delay-moderate .airport-code {
+  border-color: rgba(135, 87, 0, 0.52);
+  color: var(--amber);
+}
+
+.airport-marker.delay-severe .airport-code {
+  border-color: rgba(196, 59, 53, 0.52);
+  color: var(--red-soft);
 }
 
 .airport-hover-card {
@@ -463,8 +521,8 @@ canvas:focus-visible {
   padding: 8px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
-  background: rgba(6, 13, 25, 0.96);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 30px rgba(37, 57, 76, 0.18);
   opacity: 0;
   pointer-events: none;
   text-align: left;
@@ -499,8 +557,8 @@ canvas:focus-visible {
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
-  background: rgba(6, 13, 25, 0.9);
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.24);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 8px 26px rgba(37, 57, 76, 0.16);
   touch-action: manipulation;
 }
 
@@ -515,7 +573,7 @@ canvas:focus-visible {
   grid-template-columns: repeat(3, 44px);
   grid-template-rows: repeat(2, 44px);
   justify-content: center;
-  background: rgba(98, 185, 245, 0.025);
+  background: rgba(9, 107, 159, 0.035);
 }
 
 .map-controls button {
@@ -557,12 +615,16 @@ canvas:focus-visible {
 
 .map-controls button:hover:not(:disabled),
 .map-controls button:focus-visible {
-  background: rgba(98, 185, 245, 0.13);
+  background: rgba(9, 107, 159, 0.12);
   color: var(--blue-soft);
 }
 
+.map-controls button:focus-visible {
+  outline-offset: -3px;
+}
+
 .map-controls button:disabled {
-  color: rgba(164, 188, 218, 0.3);
+  color: #98a5b2;
   cursor: not-allowed;
 }
 
@@ -596,9 +658,9 @@ canvas:focus-visible {
 .network-state > button {
   min-height: 38px;
   padding: 0 15px;
-  border: 1px solid rgba(98, 185, 245, 0.42);
+  border: 1px solid rgba(9, 107, 159, 0.44);
   border-radius: 9px;
-  background: rgba(98, 185, 245, 0.1);
+  background: rgba(9, 107, 159, 0.09);
   color: var(--blue-soft);
 }
 
@@ -611,8 +673,8 @@ canvas:focus-visible {
   padding: 10px 12px;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
-  background: rgba(6, 13, 25, 0.94);
-  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 35px rgba(37, 57, 76, 0.2);
   pointer-events: none;
 }
 
@@ -646,7 +708,7 @@ canvas:focus-visible {
   right: 14px;
   bottom: 12px;
   max-width: calc(100% - 28px);
-  color: rgba(164, 188, 218, 0.48);
+  color: #566d83;
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
   letter-spacing: 0.04em;
@@ -672,7 +734,7 @@ canvas:focus-visible {
   gap: 3px;
   min-width: 0;
   padding: 12px 14px;
-  background: rgba(12, 23, 41, 0.98);
+  background: rgba(255, 255, 255, 0.98);
 }
 
 .metric span {
@@ -692,14 +754,18 @@ canvas:focus-visible {
   letter-spacing: -0.02em;
 }
 
-.metric strong.impact-value {
+.metric strong.impact-value.delay-moderate {
+  color: var(--amber);
+}
+
+.metric strong.impact-value.delay-severe {
   color: var(--red-soft);
 }
 
 .scenario-panel {
   position: relative;
   min-width: 0;
-  background: rgba(9, 19, 34, 0.78);
+  background: rgba(248, 250, 252, 0.92);
 }
 
 .scenario-panel-inner {
@@ -738,7 +804,7 @@ canvas:focus-visible {
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 11px;
-  background: rgba(5, 12, 23, 0.5);
+  background: rgba(223, 232, 240, 0.58);
 }
 
 .scenario-tabs button {
@@ -754,14 +820,16 @@ canvas:focus-visible {
 .scenario-tabs button.active {
   background: var(--surface-soft);
   color: var(--ink);
-  box-shadow: inset 0 0 0 1px rgba(180, 205, 233, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(33, 55, 77, 0.12),
+    0 1px 3px rgba(34, 53, 72, 0.08);
 }
 
 .scenario-scroll {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 18px 20px 34px;
-  scrollbar-color: rgba(147, 175, 204, 0.26) transparent;
+  scrollbar-color: rgba(76, 99, 122, 0.32) transparent;
   scrollbar-width: thin;
 }
 
@@ -793,7 +861,7 @@ canvas:focus-visible {
   padding: 14px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, rgba(40, 89, 129, 0.19), rgba(17, 30, 51, 0.68));
+  background: linear-gradient(135deg, rgba(9, 107, 159, 0.1), rgba(255, 255, 255, 0.86));
 }
 
 .route-selection-main {
@@ -837,9 +905,9 @@ canvas:focus-visible {
 
 .route-prompt {
   padding: 18px;
-  border: 1px dashed rgba(144, 176, 209, 0.24);
+  border: 1px dashed rgba(56, 82, 108, 0.34);
   border-radius: var(--radius-md);
-  background: rgba(15, 29, 49, 0.42);
+  background: rgba(240, 245, 249, 0.82);
 }
 
 .route-prompt strong {
@@ -869,14 +937,14 @@ canvas:focus-visible {
   padding: 0 11px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: rgba(12, 24, 43, 0.68);
+  background: rgba(255, 255, 255, 0.82);
   color: var(--ink-soft);
   text-align: left;
 }
 
 .route-shortcut:hover {
-  border-color: rgba(98, 185, 245, 0.4);
-  background: rgba(22, 43, 70, 0.78);
+  border-color: rgba(9, 107, 159, 0.42);
+  background: rgba(232, 242, 249, 0.95);
   color: var(--ink);
 }
 
@@ -897,7 +965,7 @@ canvas:focus-visible {
   max-height: 184px;
   overflow-y: auto;
   padding-right: 2px;
-  scrollbar-color: rgba(147, 175, 204, 0.24) transparent;
+  scrollbar-color: rgba(76, 99, 122, 0.3) transparent;
   scrollbar-width: thin;
 }
 
@@ -911,19 +979,19 @@ canvas:focus-visible {
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(10, 21, 38, 0.64);
+  background: rgba(255, 255, 255, 0.86);
   color: var(--ink-soft);
   text-align: left;
 }
 
 .flight-option:hover:not(:disabled) {
   border-color: var(--line-strong);
-  background: rgba(19, 37, 61, 0.7);
+  background: rgba(238, 244, 249, 0.98);
 }
 
 .flight-option.selected {
-  border-color: rgba(98, 185, 245, 0.48);
-  background: rgba(30, 71, 105, 0.3);
+  border-color: rgba(9, 107, 159, 0.52);
+  background: rgba(9, 107, 159, 0.1);
   color: var(--ink);
   box-shadow: inset 3px 0 0 var(--blue);
 }
@@ -960,7 +1028,11 @@ canvas:focus-visible {
   font-size: 9px;
 }
 
-.observed-delay {
+.flight-status.delay-moderate {
+  color: var(--amber);
+}
+
+.flight-status.delay-severe {
   color: var(--red-soft);
 }
 
@@ -968,7 +1040,7 @@ canvas:focus-visible {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: rgba(12, 24, 43, 0.7);
+  background: rgba(248, 250, 252, 0.96);
 }
 
 .delay-readout {
@@ -979,7 +1051,7 @@ canvas:focus-visible {
 }
 
 .delay-readout strong {
-  color: var(--red-soft);
+  color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 25px;
   letter-spacing: -0.04em;
@@ -993,6 +1065,22 @@ canvas:focus-visible {
 .delay-control input[type="range"] {
   width: 100%;
   margin: 15px 0 7px;
+  accent-color: var(--blue);
+}
+
+.delay-control.delay-moderate .delay-readout strong {
+  color: var(--amber);
+}
+
+.delay-control.delay-moderate input[type="range"] {
+  accent-color: var(--amber);
+}
+
+.delay-control.delay-severe .delay-readout strong {
+  color: var(--red-soft);
+}
+
+.delay-control.delay-severe input[type="range"] {
   accent-color: var(--red);
 }
 
@@ -1022,10 +1110,17 @@ canvas:focus-visible {
   font-weight: 650;
 }
 
-.quick-delays button:hover,
-.quick-delays button.active {
-  border-color: rgba(255, 98, 90, 0.42);
-  background: rgba(255, 98, 90, 0.1);
+.quick-delays button.delay-moderate:hover,
+.quick-delays button.delay-moderate.active {
+  border-color: rgba(135, 87, 0, 0.46);
+  background: rgba(135, 87, 0, 0.1);
+  color: var(--amber);
+}
+
+.quick-delays button.delay-severe:hover,
+.quick-delays button.delay-severe.active {
+  border-color: rgba(196, 59, 53, 0.46);
+  background: rgba(196, 59, 53, 0.1);
   color: var(--red-soft);
 }
 
@@ -1033,14 +1128,28 @@ canvas:focus-visible {
   width: 100%;
   min-height: 39px;
   margin-top: 8px;
-  border-color: rgba(246, 201, 107, 0.28);
+}
+
+.actual-delay-button.delay-moderate {
+  border-color: rgba(135, 87, 0, 0.34);
   color: var(--amber);
 }
 
-.actual-delay-button:hover,
-.actual-delay-button.active {
-  border-color: rgba(246, 201, 107, 0.6);
-  background: rgba(246, 201, 107, 0.1);
+.actual-delay-button.delay-moderate:hover,
+.actual-delay-button.delay-moderate.active {
+  border-color: rgba(135, 87, 0, 0.62);
+  background: rgba(135, 87, 0, 0.1);
+}
+
+.actual-delay-button.delay-severe {
+  border-color: rgba(196, 59, 53, 0.38);
+  color: var(--red-soft);
+}
+
+.actual-delay-button.delay-severe:hover,
+.actual-delay-button.delay-severe.active {
+  border-color: rgba(196, 59, 53, 0.64);
+  background: rgba(196, 59, 53, 0.1);
 }
 
 .actual-delay-button:disabled {
@@ -1059,17 +1168,35 @@ canvas:focus-visible {
   gap: 4px;
   min-width: 0;
   padding: 11px 8px;
-  border: 1px solid rgba(255, 98, 90, 0.18);
+  border: 1px solid rgba(9, 107, 159, 0.24);
   border-radius: 10px;
-  background: rgba(255, 98, 90, 0.07);
+  background: rgba(9, 107, 159, 0.075);
   text-align: center;
 }
 
 .impact-card strong {
-  color: var(--red-soft);
+  color: var(--blue-soft);
   font-family: var(--font-geist-mono), monospace;
   font-size: 18px;
   letter-spacing: -0.03em;
+}
+
+.impact-summary.delay-moderate .impact-card {
+  border-color: rgba(135, 87, 0, 0.26);
+  background: rgba(135, 87, 0, 0.075);
+}
+
+.impact-summary.delay-moderate .impact-card strong {
+  color: var(--amber);
+}
+
+.impact-summary.delay-severe .impact-card {
+  border-color: rgba(196, 59, 53, 0.24);
+  background: rgba(196, 59, 53, 0.075);
+}
+
+.impact-summary.delay-severe .impact-card strong {
+  color: var(--red-soft);
 }
 
 .impact-card span {
@@ -1091,14 +1218,14 @@ canvas:focus-visible {
   min-width: 0;
   gap: 5px;
   padding: 12px;
-  border: 1px solid rgba(98, 185, 245, 0.2);
+  border: 1px solid rgba(9, 107, 159, 0.25);
   border-radius: 10px;
-  background: rgba(98, 185, 245, 0.055);
+  background: rgba(9, 107, 159, 0.065);
 }
 
 .replay-side.recorded {
-  border-color: rgba(246, 201, 107, 0.28);
-  background: rgba(246, 201, 107, 0.065);
+  border-color: rgba(9, 107, 159, 0.25);
+  background: rgba(9, 107, 159, 0.065);
 }
 
 .replay-side > span {
@@ -1117,7 +1244,25 @@ canvas:focus-visible {
 }
 
 .replay-side.recorded strong {
+  color: var(--blue-soft);
+}
+
+.replay-side.delay-moderate {
+  border-color: rgba(135, 87, 0, 0.3);
+  background: rgba(135, 87, 0, 0.075);
+}
+
+.replay-side.delay-moderate strong {
   color: var(--amber);
+}
+
+.replay-side.delay-severe {
+  border-color: rgba(196, 59, 53, 0.28);
+  background: rgba(196, 59, 53, 0.075);
+}
+
+.replay-side.delay-severe strong {
+  color: var(--red-soft);
 }
 
 .replay-side small {
@@ -1152,7 +1297,7 @@ canvas:focus-visible {
   left: 12px;
   width: 1px;
   content: "";
-  background: rgba(255, 98, 90, 0.28);
+  background: rgba(65, 88, 111, 0.24);
 }
 
 .rotation-row:last-child::before {
@@ -1166,10 +1311,10 @@ canvas:focus-visible {
   width: 25px;
   height: 25px;
   place-items: center;
-  border: 1px solid rgba(255, 98, 90, 0.44);
+  border: 1px solid var(--line-strong);
   border-radius: 50%;
   background: var(--surface);
-  color: var(--red-soft);
+  color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
 }
@@ -1193,10 +1338,36 @@ canvas:focus-visible {
 
 .rotation-delay {
   padding-top: 2px;
-  color: var(--red-soft);
+  color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11px;
   font-weight: 700;
+}
+
+.rotation-row.delay-moderate::before {
+  background: rgba(135, 87, 0, 0.32);
+}
+
+.rotation-row.delay-moderate .rotation-index {
+  border-color: rgba(135, 87, 0, 0.5);
+  color: var(--amber);
+}
+
+.rotation-row.delay-moderate .rotation-delay {
+  color: var(--amber);
+}
+
+.rotation-row.delay-severe::before {
+  background: rgba(196, 59, 53, 0.32);
+}
+
+.rotation-row.delay-severe .rotation-index {
+  border-color: rgba(196, 59, 53, 0.48);
+  color: var(--red-soft);
+}
+
+.rotation-row.delay-severe .rotation-delay {
+  color: var(--red-soft);
 }
 
 .replay-rotation-list {
@@ -1209,7 +1380,12 @@ canvas:focus-visible {
 }
 
 .replay-row::before {
-  background: rgba(164, 188, 218, 0.2);
+  background: rgba(65, 88, 111, 0.24);
+}
+
+.replay-row .rotation-index {
+  border-color: var(--line-strong);
+  color: var(--muted);
 }
 
 .replay-delay-pair {
@@ -1239,17 +1415,9 @@ canvas:focus-visible {
   line-height: 1.25;
 }
 
-.replay-delay-pair .modeled-delay {
-  color: var(--red-soft);
-}
-
 .replay-delay-pair .model-stopped {
   color: var(--muted);
   font-style: italic;
-}
-
-.replay-delay-pair .delayed {
-  color: var(--amber);
 }
 
 .replay-delay-pair .on-time-or-early {
@@ -1258,6 +1426,14 @@ canvas:focus-visible {
 
 .replay-delay-pair .cancelled,
 .replay-delay-pair .diverted {
+  color: var(--red-soft);
+}
+
+.replay-delay-pair strong.delay-moderate {
+  color: var(--amber);
+}
+
+.replay-delay-pair strong.delay-severe {
   color: var(--red-soft);
 }
 
@@ -1298,9 +1474,9 @@ canvas:focus-visible {
   padding: 0 11px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: rgba(8, 18, 33, 0.85);
+  background: #ffffff;
   color: var(--ink);
-  color-scheme: dark;
+  color-scheme: light;
   font-size: 11px;
 }
 
@@ -1309,7 +1485,7 @@ canvas:focus-visible {
   padding: 11px 12px;
   border-left: 2px solid var(--amber);
   border-radius: 0 8px 8px 0;
-  background: rgba(246, 201, 107, 0.07);
+  background: rgba(135, 87, 0, 0.08);
   color: var(--ink-soft);
   font-size: 10px;
   line-height: 1.5;
@@ -1350,7 +1526,7 @@ canvas:focus-visible {
   place-items: center;
   padding: 30px;
   background:
-    radial-gradient(circle at 50% 40%, rgba(53, 131, 185, 0.15), transparent 28rem),
+    radial-gradient(circle at 50% 40%, rgba(35, 120, 172, 0.12), transparent 28rem),
     var(--page);
 }
 
@@ -1367,7 +1543,7 @@ canvas:focus-visible {
   position: relative;
   width: 54px;
   height: 54px;
-  border: 1px solid rgba(98, 185, 245, 0.27);
+  border: 1px solid rgba(9, 107, 159, 0.34);
   border-radius: 50%;
   animation: orbit 1.8s linear infinite;
 }
@@ -1381,7 +1557,7 @@ canvas:focus-visible {
   content: "";
   border-radius: 50%;
   background: var(--blue);
-  box-shadow: 0 0 16px rgba(98, 185, 245, 0.7);
+  box-shadow: 0 0 16px rgba(9, 107, 159, 0.4);
 }
 
 @keyframes orbit {
@@ -1403,9 +1579,9 @@ canvas:focus-visible {
 .error-card button {
   min-height: 40px;
   padding: 0 16px;
-  border: 1px solid rgba(98, 185, 245, 0.42);
+  border: 1px solid rgba(9, 107, 159, 0.44);
   border-radius: 9px;
-  background: rgba(98, 185, 245, 0.1);
+  background: rgba(9, 107, 159, 0.09);
   color: var(--blue-soft);
 }
 

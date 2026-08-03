@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   compareRecordedReplay,
+  getDelaySeverity,
   getActualDelaySeedMinutes,
   simulateFlightDelay,
   simulateGroundStop,
@@ -31,6 +32,15 @@ function flight(overrides) {
     ...overrides,
   };
 }
+
+test("delay severity changes from yellow-band moderate to severe at 45 minutes", () => {
+  assert.equal(getDelaySeverity(null), "none");
+  assert.equal(getDelaySeverity(0), "none");
+  assert.equal(getDelaySeverity(0.1), "moderate");
+  assert.equal(getDelaySeverity(44.999), "moderate");
+  assert.equal(getDelaySeverity(45), "severe");
+  assert.equal(getDelaySeverity(180), "severe");
+});
 
 test("flight delay propagates through a tail rotation and uses ground time as recovery", () => {
   const flights = [

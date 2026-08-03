@@ -17,6 +17,10 @@ import type {
   Topology,
 } from "topojson-specification";
 import statesTopology from "us-atlas/states-10m.json";
+import {
+  type DelaySeverity,
+  getDelaySeverity,
+} from "../lib/simulation";
 
 export type Airport = {
   code: string;
@@ -56,7 +60,8 @@ type AirportMarker = {
   y: number;
   size: number;
   showLabel: boolean;
-  impacted: boolean;
+  delayMinutes: number;
+  delaySeverity: DelaySeverity;
   selected: boolean;
   focused: boolean;
   leaderLength: number;
@@ -68,8 +73,8 @@ type NetworkMapProps = {
   routes: NetworkRoute[];
   selectedRouteKey: string | null;
   selectedAirportCode: string | null;
-  impactedRouteKeys: Set<string>;
-  recordedRouteKeys: Set<string>;
+  modeledRouteDelays: ReadonlyMap<string, number>;
+  recordedRouteDelays: ReadonlyMap<string, number>;
   selectionMode: "route" | "airport";
   onSelectRoute: (route: NetworkRoute) => void;
   onSelectAirport: (airport: Airport) => void;
@@ -90,6 +95,16 @@ const stateLines = mesh(
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
+
+function delayColor(severity: DelaySeverity, alpha = 0.98) {
+  return severity === "severe"
+    ? `rgba(196, 59, 53, ${alpha})`
+    : `rgba(135, 87, 0, ${alpha})`;
+}
+
+function severityRank(severity: DelaySeverity) {
+  return severity === "severe" ? 2 : severity === "moderate" ? 1 : 0;
+}
 
 function clampView(
   view: ViewTransform,
@@ -201,8 +216,8 @@ export function NetworkMap({
   routes,
   selectedRouteKey,
   selectedAirportCode,
-  impactedRouteKeys,
-  recordedRouteKeys,
+  modeledRouteDelays,
+  recordedRouteDelays,
   selectionMode,
   onSelectRoute,
   onSelectAirport,
@@ -362,12 +377,12 @@ export function NetworkMap({
 
     context.beginPath();
     path(nation);
-    context.fillStyle = "#101a2c";
+    context.fillStyle = "#f8fafc";
     context.fill();
 
     context.beginPath();
     path(stateLines);
-    context.strokeStyle = "rgba(164, 188, 218, 0.14)";
+    context.strokeStyle = "rgba(48, 72, 94, 0.68)";
     context.lineWidth = 0.75 / view.scale;
     context.stroke();
 
@@ -403,14 +418,14 @@ export function NetworkMap({
         );
       });
       for (const box of usedBoxes) {
-        context.fillStyle = "rgba(8, 18, 33, 0.78)";
-        context.strokeStyle = "rgba(164, 188, 218, 0.2)";
+        context.fillStyle = "rgba(255, 255, 255, 0.9)";
+        context.strokeStyle = "rgba(54, 78, 101, 0.36)";
         context.lineWidth = 0.75 / view.scale;
         context.beginPath();
         context.roundRect(box.x, box.y, box.width, box.height, 7);
         context.fill();
         context.stroke();
-        context.fillStyle = "rgba(164, 188, 218, 0.55)";
+        context.fillStyle = "rgba(43, 64, 84, 0.78)";
         context.font = `600 ${8 / view.scale}px monospace`;
         context.textAlign = "left";
         context.textBaseline = "top";
@@ -423,8 +438,8 @@ export function NetworkMap({
     }
 
     const sortedRoutes = [...routes].sort((a, b) => {
-      const aImportant = impactedRouteKeys.has(a.key) || recordedRouteKeys.has(a.key) || a.key === selectedRouteKey;
-      const bImportant = impactedRouteKeys.has(b.key) || recordedRouteKeys.has(b.key) || b.key === selectedRouteKey;
+      const aImportant = (modeledRouteDelays.get(a.key) ?? 0) > 0 || (recordedRouteDelays.get(a.key) ?? 0) > 0 || a.key === selectedRouteKey;
+      const bImportant = (modeledRouteDelays.get(b.key) ?? 0) > 0 || (recordedRouteDelays.get(b.key) ?? 0) > 0 || b.key === selectedRouteKey;
       return Number(aImportant) - Number(bImportant) || a.flights - b.flights;
     });
 
@@ -433,8 +448,10 @@ export function NetworkMap({
       const destination = projectedAirports.get(route.destination);
       if (!origin || !destination) continue;
       const points = routeCurve(origin, destination);
-      const impacted = impactedRouteKeys.has(route.key);
-      const recorded = recordedRouteKeys.has(route.key);
+      const modeledSeverity = getDelaySeverity(modeledRouteDelays.get(route.key));
+      const recordedSeverity = getDelaySeverity(recordedRouteDelays.get(route.key));
+      const modeled = modeledSeverity !== "none";
+      const recorded = recordedSeverity !== "none";
       const selected = route.key === selectedRouteKey;
       const isHovered = hoveredRouteKey === route.key;
 
@@ -443,14 +460,14 @@ export function NetworkMap({
       for (let index = 1; index < points.length; index += 1) {
         context.lineTo(points[index][0], points[index][1]);
       }
-      context.strokeStyle = impacted
-        ? "rgba(255, 88, 82, 0.96)"
+      context.strokeStyle = modeled
+        ? delayColor(modeledSeverity)
         : selected
-          ? "rgba(250, 203, 104, 0.98)"
+          ? "rgba(135, 87, 0, 0.98)"
           : isHovered
-            ? "rgba(175, 228, 255, 0.96)"
-            : "rgba(86, 172, 233, 0.34)";
-      context.lineWidth = (impacted
+            ? "rgba(0, 78, 122, 0.98)"
+            : "rgba(0, 82, 132, 0.68)";
+      context.lineWidth = (modeled
         ? 2.45
         : selected || isHovered
           ? 2.1
@@ -459,7 +476,7 @@ export function NetworkMap({
       if (recorded) {
         context.save();
         context.setLineDash([5.5 / view.scale, 4 / view.scale]);
-        context.strokeStyle = "rgba(246, 201, 107, 0.98)";
+        context.strokeStyle = delayColor(recordedSeverity);
         context.lineWidth = 1.75 / view.scale;
         context.stroke();
         context.restore();
@@ -467,12 +484,21 @@ export function NetworkMap({
       hits.push({ route, points: points.map((point) => screenPoint(point, view)) });
     }
 
-    const impactedAirports = new Set<string>();
+    const airportDelayMinutes = new Map<string, number>();
     for (const route of routes) {
-      if (impactedRouteKeys.has(route.key)) {
-        impactedAirports.add(route.origin);
-        impactedAirports.add(route.destination);
-      }
+      const routeDelay = Math.max(
+        modeledRouteDelays.get(route.key) ?? 0,
+        recordedRouteDelays.get(route.key) ?? 0,
+      );
+      if (routeDelay <= 0) continue;
+      airportDelayMinutes.set(
+        route.origin,
+        Math.max(airportDelayMinutes.get(route.origin) ?? 0, routeDelay),
+      );
+      airportDelayMinutes.set(
+        route.destination,
+        Math.max(airportDelayMinutes.get(route.destination) ?? 0, routeDelay),
+      );
     }
 
     const activeAirports = [...airportTraffic.entries()]
@@ -485,13 +511,15 @@ export function NetworkMap({
       const airport = airports.get(code);
       const point = projectedAirports.get(code);
       if (!airport || !point) return;
-      const impacted = impactedAirports.has(code);
+      const delayMinutes = airportDelayMinutes.get(code) ?? 0;
+      const delaySeverity = getDelaySeverity(delayMinutes);
+      const delayed = delaySeverity !== "none";
       const selected = code === selectedAirportCode;
       const focused = code === focusedAirportCode;
       const importance = Math.sqrt(count / maxTraffic);
       const revealAt = MIN_ZOOM + (1 - importance) * 3.6;
       const labelAt = Math.min(MAX_ZOOM, revealAt + 0.25);
-      if (!impacted && !selected && !focused && view.scale + 0.001 < revealAt) return;
+      if (!delayed && !selected && !focused && view.scale + 0.001 < revealAt) return;
 
       const [x, y] = screenPoint(point, view);
       if (x < -90 || x > size.width + 90 || y < -90 || y > size.height + 90) {
@@ -503,8 +531,9 @@ export function NetworkMap({
         x,
         y,
         size: 5 + importance * 7,
-        showLabel: impacted || selected || focused || view.scale + 0.001 >= labelAt,
-        impacted,
+        showLabel: delayed || selected || focused || view.scale + 0.001 >= labelAt,
+        delayMinutes,
+        delaySeverity,
         selected,
         focused,
         leaderLength: 0,
@@ -514,7 +543,7 @@ export function NetworkMap({
 
     markerCandidates.sort((a, b) =>
       Number(b.selected) - Number(a.selected)
-      || Number(b.impacted) - Number(a.impacted)
+      || severityRank(b.delaySeverity) - severityRank(a.delaySeverity)
       || b.traffic - a.traffic
       || a.airport.code.localeCompare(b.airport.code));
     const markers: AirportMarker[] = [];
@@ -568,7 +597,7 @@ export function NetworkMap({
     context.restore();
     hitsRef.current = hits;
     setVisibleAirportMarkers(markers);
-  }, [airports, airportTraffic, focusedAirportCode, hoveredRouteKey, impactedRouteKeys, recordedRouteKeys, routes, selectedAirportCode, selectedRouteKey, size, view]);
+  }, [airports, airportTraffic, focusedAirportCode, hoveredRouteKey, modeledRouteDelays, recordedRouteDelays, routes, selectedAirportCode, selectedRouteKey, size, view]);
 
   function updateHoveredRoute(routeKey: string | null) {
     setHoverState((current) => {
@@ -824,7 +853,7 @@ export function NetworkMap({
           const markerClass = [
             "airport-marker",
             marker.showLabel ? "show-label" : "",
-            marker.impacted ? "impacted" : "",
+            marker.delaySeverity !== "none" ? `delay-${marker.delaySeverity}` : "",
             marker.selected ? "selected" : "",
             marker.leaderLength > 1 ? "displaced" : "",
             selectionMode === "airport" ? "selectable" : "",
@@ -836,7 +865,10 @@ export function NetworkMap({
             "--leader-length": `${marker.leaderLength}px`,
             "--leader-angle": `${marker.leaderAngle}deg`,
           } as CSSProperties;
-          const detail = `${marker.airport.code} — ${marker.airport.name}, ${marker.traffic} scheduled carrier-day movements`;
+          const delayDetail = marker.delaySeverity === "none"
+            ? ""
+            : `, maximum displayed route delay ${Math.round(marker.delayMinutes)} minutes`;
+          const detail = `${marker.airport.code} — ${marker.airport.name}, ${marker.traffic} scheduled carrier-day movements${delayDetail}`;
 
           return selectionMode === "airport" ? (
             <button
