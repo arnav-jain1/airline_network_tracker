@@ -64,6 +64,7 @@ select {
 
 button,
 select,
+input[type="date"],
 input[type="range"] {
   cursor: pointer;
 }
@@ -162,7 +163,7 @@ canvas:focus-visible {
 
 .dataset-controls {
   display: grid;
-  grid-template-columns: minmax(132px, 0.9fr) minmax(112px, 0.75fr) minmax(182px, 1.25fr);
+  grid-template-columns: minmax(170px, 0.9fr) minmax(210px, 1.1fr);
   align-items: center;
   justify-content: center;
   gap: 0;
@@ -195,19 +196,29 @@ canvas:focus-visible {
   text-transform: uppercase;
 }
 
-.control-field select {
+.control-field select,
+.control-field input[type="date"] {
   width: 100%;
   min-height: 25px;
-  padding: 0 24px 0 0;
   border: 0;
-  appearance: none;
   background: transparent;
   color: var(--ink);
   font-size: 13px;
   font-weight: 620;
 }
 
-.control-field::after {
+.control-field select {
+  padding: 0 24px 0 0;
+  appearance: none;
+}
+
+.control-field input[type="date"] {
+  min-width: 0;
+  padding: 0;
+  color-scheme: light;
+}
+
+.control-field-carrier::after {
   position: absolute;
   right: 10px;
   bottom: 11px;
@@ -1723,7 +1734,7 @@ canvas:focus-visible {
 
   .dataset-controls {
     gap: 0;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .control-field {
@@ -1731,12 +1742,11 @@ canvas:focus-visible {
     padding-left: 7px;
   }
 
-  .control-field::after {
+  .control-field-carrier::after {
     right: 6px;
   }
 
   .control-field-carrier {
-    grid-column: 1 / -1;
     border-top: 1px solid var(--line);
     border-left: 0 !important;
   }

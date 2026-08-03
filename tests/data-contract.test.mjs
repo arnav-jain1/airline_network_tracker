@@ -41,6 +41,9 @@ test("manifest indexes every compact day/carrier chunk", async () => {
   assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.dates.length, 151);
   assert.deepEqual(manifest.dates, [...new Set(manifest.dates)].sort());
+  const expectedDates = Array.from({ length: 151 }, (_, offset) =>
+    new Date(Date.UTC(2026, 0, 1 + offset)).toISOString().slice(0, 10));
+  assert.deepEqual(manifest.dates, expectedDates);
   for (const includedDate of [
     "2026-01-01", "2026-01-31",
     "2026-02-01", "2026-02-28",
