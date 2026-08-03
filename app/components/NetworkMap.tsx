@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -43,6 +44,13 @@ export type NetworkRoute = {
 type RouteHit = {
   route: NetworkRoute;
   points: [number, number][];
+  path: Path2D | null;
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  };
 };
 
 type InsetBox = { x: number; y: number; width: number; height: number; label: string };
@@ -104,6 +112,9 @@ const stateLines = mesh(
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
+const useCanvasLayoutEffect = typeof window === "undefined"
+  ? useEffect
+  : useLayoutEffect;
 
 function delayColor(severity: DelaySeverity, alpha = 0.98) {
   return severity === "severe"
@@ -138,6 +149,10 @@ function screenPoint(
     point[0] * view.scale + view.x,
     point[1] * view.scale + view.y,
   ];
+}
+
+function sameView(a: ViewTransform, b: ViewTransform) {
+  return a.scale === b.scale && a.x === b.x && a.y === b.y;
 }
 
 function distanceToSegment(
@@ -180,6 +195,56 @@ function routeCurve(
     ]);
   }
   return points;
+}
+
+function canvasPath(points: [number, number][]) {
+  if (typeof Path2D === "undefined") return null;
+  try {
+    const path = new Path2D();
+    path.moveTo(points[0][0], points[0][1]);
+    for (let index = 1; index < points.length; index += 1) {
+      path.lineTo(points[index][0], points[index][1]);
+    }
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+function svgCanvasPath(pathData: string | null) {
+  if (!pathData || typeof Path2D === "undefined") return null;
+  try {
+    return new Path2D(pathData);
+  } catch {
+    return null;
+  }
+}
+
+function routeBounds(points: [number, number][]) {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function strokeRoute(context: CanvasRenderingContext2D, hit: RouteHit) {
+  if (hit.path) {
+    context.stroke(hit.path);
+    return;
+  }
+  context.beginPath();
+  context.moveTo(hit.points[0][0], hit.points[0][1]);
+  for (let index = 1; index < hit.points.length; index += 1) {
+    context.lineTo(hit.points[index][0], hit.points[index][1]);
+  }
+  context.stroke();
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -234,6 +299,7 @@ export function NetworkMap({
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hitsRef = useRef<RouteHit[]>([]);
+  const paintedViewRef = useRef<ViewTransform>({ scale: MIN_ZOOM, x: 0, y: 0 });
   const activePointersRef = useRef(new Map<number, { x: number; y: number }>());
   const gestureRef = useRef({
     centerX: 0,
@@ -253,7 +319,6 @@ export function NetworkMap({
     y: 0,
   });
   const [isDragging, setIsDragging] = useState(false);
-  const [visibleAirportMarkers, setVisibleAirportMarkers] = useState<AirportMarker[]>([]);
   const [focusedAirportCode, setFocusedAirportCode] = useState<string | null>(null);
   const [hoverState, setHoverState] = useState<{
     routes: NetworkRoute[];
@@ -262,11 +327,14 @@ export function NetworkMap({
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
 
   const commitView = useCallback((next: ViewTransform) => {
+    if (sameView(viewRef.current, next)) return;
     viewRef.current = next;
     if (viewFrameRef.current != null) return;
     viewFrameRef.current = window.requestAnimationFrame(() => {
       viewFrameRef.current = null;
-      setView(viewRef.current);
+      setView((current) => sameView(current, viewRef.current)
+        ? current
+        : viewRef.current);
     });
   }, []);
 
@@ -296,6 +364,232 @@ export function NetworkMap({
     }
     return traffic;
   }, [routes]);
+
+  const mapGeometry = useMemo(() => {
+    const projection = geoAlbersUsa().fitExtent(
+      [[34, 34], [size.width - 36, size.height - 38]],
+      nation,
+    );
+    const geographyPath = geoPath(projection);
+    const compactInsets = size.width < 620;
+    const alaskaOffsetY = compactInsets ? -18 : -24;
+    const caribbeanBox: InsetBox = compactInsets
+      ? { x: size.width - 171, y: size.height - 88, width: 126, height: 59, label: "CARIBBEAN" }
+      : { x: size.width - 212, y: size.height - 108, width: 160, height: 76, label: "CARIBBEAN" };
+    const pacificBox: InsetBox = compactInsets
+      ? { x: size.width - 108, y: size.height - 182, width: 63, height: 55, label: "PACIFIC" }
+      : { x: size.width - 137, y: size.height - 219, width: 85, height: 67, label: "PACIFIC" };
+    const activeAirportCodes = new Set(
+      routes.flatMap((route) => [route.origin, route.destination]),
+    );
+    const projectedAirports = new Map<string, [number, number]>();
+    const territoryAirports: Airport[] = [];
+
+    for (const [code, airport] of airports) {
+      const point = projection([airport.longitude, airport.latitude]);
+      if (point) {
+        projectedAirports.set(code, [
+          point[0],
+          point[1] + (airport.state === "AK" ? alaskaOffsetY : 0),
+        ]);
+      } else if (activeAirportCodes.has(code)) {
+        territoryAirports.push(airport);
+      }
+    }
+
+    const usedBoxes = new Set<InsetBox>();
+    territoryAirports.sort((a, b) => a.code.localeCompare(b.code));
+    territoryAirports.forEach((airport, index) => {
+      const box = airport.state === "PR" || airport.state === "VI"
+        ? caribbeanBox
+        : pacificBox;
+      usedBoxes.add(box);
+      projectedAirports.set(
+        airport.code,
+        territoryPosition(airport, caribbeanBox, pacificBox, index),
+      );
+    });
+
+    const routeGeometry: RouteHit[] = [];
+    for (const route of routes) {
+      const origin = projectedAirports.get(route.origin);
+      const destination = projectedAirports.get(route.destination);
+      if (!origin || !destination) continue;
+      const points = routeCurve(origin, destination);
+      routeGeometry.push({
+        route,
+        points,
+        path: canvasPath(points),
+        bounds: routeBounds(points),
+      });
+    }
+
+    const activeAirports = [...airportTraffic.entries()]
+      .filter(([code]) => projectedAirports.has(code))
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+    return {
+      projection,
+      statesPath: svgCanvasPath(geographyPath(statesWithoutAlaska)),
+      alaskaPath: alaska ? svgCanvasPath(geographyPath(alaska)) : null,
+      stateLinesPath: svgCanvasPath(geographyPath(stateLines)),
+      alaskaOffsetY,
+      projectedAirports,
+      usedBoxes: [...usedBoxes],
+      routeGeometry,
+      activeAirports,
+      maxTraffic: Math.max(1, ...activeAirports.map(([, count]) => count)),
+    };
+  }, [airports, airportTraffic, routes, size.height, size.width]);
+
+  const paintedRoutes = useMemo(() => mapGeometry.routeGeometry
+    .map((hit) => ({
+      ...hit,
+      modeledSeverity: getDelaySeverity(modeledRouteDelays.get(hit.route.key)),
+      recordedSeverity: getDelaySeverity(recordedRouteDelays.get(hit.route.key)),
+      selected: hit.route.key === selectedRouteKey,
+    }))
+    .sort((a, b) => {
+      const aImportant = a.modeledSeverity !== "none"
+        || a.recordedSeverity !== "none"
+        || a.selected;
+      const bImportant = b.modeledSeverity !== "none"
+        || b.recordedSeverity !== "none"
+        || b.selected;
+      return Number(aImportant) - Number(bImportant)
+        || a.route.flights - b.route.flights;
+    }), [mapGeometry.routeGeometry, modeledRouteDelays, recordedRouteDelays, selectedRouteKey]);
+
+  const airportDelayMinutes = useMemo(() => {
+    const delays = new Map<string, number>();
+    for (const route of routes) {
+      const routeDelay = Math.max(
+        modeledRouteDelays.get(route.key) ?? 0,
+        recordedRouteDelays.get(route.key) ?? 0,
+      );
+      if (routeDelay <= 0) continue;
+      delays.set(route.origin, Math.max(delays.get(route.origin) ?? 0, routeDelay));
+      delays.set(
+        route.destination,
+        Math.max(delays.get(route.destination) ?? 0, routeDelay),
+      );
+    }
+    return delays;
+  }, [modeledRouteDelays, recordedRouteDelays, routes]);
+
+  const visibleAirportMarkers = useMemo(() => {
+    const markerCandidates: AirportMarker[] = [];
+    for (const [code, count] of mapGeometry.activeAirports) {
+      const airport = airports.get(code);
+      const point = mapGeometry.projectedAirports.get(code);
+      if (!airport || !point) continue;
+      const delayMinutes = airportDelayMinutes.get(code) ?? 0;
+      const delaySeverity = getDelaySeverity(delayMinutes);
+      const delayed = delaySeverity !== "none";
+      const selected = code === selectedAirportCode;
+      const focused = code === focusedAirportCode;
+      const importance = Math.sqrt(count / mapGeometry.maxTraffic);
+      const revealAt = MIN_ZOOM + (1 - importance) * 3.6;
+      const labelAt = Math.min(MAX_ZOOM, revealAt + 0.25);
+      if (!delayed && !selected && !focused && view.scale + 0.001 < revealAt) continue;
+
+      const [x, y] = screenPoint(point, view);
+      if (x < -90 || x > size.width + 90 || y < -90 || y > size.height + 90) {
+        continue;
+      }
+      markerCandidates.push({
+        airport,
+        traffic: count,
+        x,
+        y,
+        size: 5 + importance * 7,
+        showLabel: delayed || selected || focused || view.scale + 0.001 >= labelAt,
+        delayMinutes,
+        delaySeverity,
+        selected,
+        focused,
+        leaderLength: 0,
+        leaderAngle: 0,
+      });
+    }
+
+    markerCandidates.sort((a, b) =>
+      Number(b.selected) - Number(a.selected)
+      || severityRank(b.delaySeverity) - severityRank(a.delaySeverity)
+      || b.traffic - a.traffic
+      || a.airport.code.localeCompare(b.airport.code));
+
+    const markers: AirportMarker[] = [];
+    const markerCells = new Map<string, AirportMarker[]>();
+    const markerCellSize = 46;
+    const cellKey = (x: number, y: number) =>
+      `${Math.floor(x / markerCellSize)}:${Math.floor(y / markerCellSize)}`;
+    const overlapsMarker = (x: number, y: number) => {
+      const cellX = Math.floor(x / markerCellSize);
+      const cellY = Math.floor(y / markerCellSize);
+      for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+        for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+          const nearby = markerCells.get(`${cellX + xOffset}:${cellY + yOffset}`);
+          if (nearby?.some((marker) => Math.hypot(marker.x - x, marker.y - y) < 46)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    for (const candidate of markerCandidates) {
+      const centerIsAvailable = (x: number, y: number) => {
+        const outsideViewport = x < 23 || x > size.width - 23 || y < 23 || y > size.height - 23;
+        const intersectsControls = x > size.width - 183 && y < 80;
+        return !outsideViewport && !intersectsControls && !overlapsMarker(x, y);
+      };
+
+      let markerX = candidate.x;
+      let markerY = candidate.y;
+      if (!centerIsAvailable(markerX, markerY)) {
+        const codeSeed = [...candidate.airport.code]
+          .reduce((sum, character) => sum + character.charCodeAt(0), 0);
+        let placed = false;
+        for (let ring = 0; ring < 4 && !placed; ring += 1) {
+          const radius = 48 + ring * 22;
+          const positions = 8 + ring * 4;
+          for (let step = 0; step < positions; step += 1) {
+            const angle = ((codeSeed * 47) % 360) * Math.PI / 180
+              + (step / positions) * Math.PI * 2;
+            const nextX = candidate.x + Math.cos(angle) * radius;
+            const nextY = candidate.y + Math.sin(angle) * radius;
+            if (!centerIsAvailable(nextX, nextY)) continue;
+            markerX = nextX;
+            markerY = nextY;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) continue;
+      }
+
+      const leaderLength = Math.hypot(candidate.x - markerX, candidate.y - markerY);
+      const marker = {
+        ...candidate,
+        x: markerX,
+        y: markerY,
+        showLabel: candidate.showLabel || leaderLength > 1,
+        leaderLength,
+        leaderAngle: Math.atan2(
+          candidate.y - markerY,
+          candidate.x - markerX,
+        ) * 180 / Math.PI,
+      };
+      markers.push(marker);
+      const key = cellKey(markerX, markerY);
+      const cell = markerCells.get(key);
+      if (cell) cell.push(marker);
+      else markerCells.set(key, [marker]);
+    }
+
+    return markers;
+  }, [airportDelayMinutes, airports, focusedAirportCode, mapGeometry, selectedAirportCode, size.height, size.width, view]);
 
   useEffect(() => {
     if (!shellRef.current) return;
@@ -359,7 +653,7 @@ export function NetworkMap({
     return () => shell.removeEventListener("wheel", handleWheel);
   }, [commitView, size]);
 
-  useEffect(() => {
+  useCanvasLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ratio = Math.min(2, window.devicePixelRatio || 1);
@@ -377,111 +671,68 @@ export function NetworkMap({
     context.save();
     context.translate(view.x, view.y);
     context.scale(view.scale, view.scale);
-
-    const projection = geoAlbersUsa().fitExtent(
-      [[34, 34], [size.width - 36, size.height - 38]],
-      nation,
-    );
-    const path = geoPath(projection, context);
-    const compactInsets = size.width < 620;
-    const alaskaOffsetY = compactInsets ? -18 : -24;
-
-    context.beginPath();
-    path(statesWithoutAlaska);
     context.fillStyle = "#f8fafc";
-    context.fill();
+    const fallbackPath = mapGeometry.statesPath
+      && mapGeometry.stateLinesPath
+      && (!alaska || mapGeometry.alaskaPath)
+      ? null
+      : geoPath(mapGeometry.projection, context);
+    if (mapGeometry.statesPath) {
+      context.fill(mapGeometry.statesPath);
+    } else {
+      context.beginPath();
+      fallbackPath?.(statesWithoutAlaska);
+      context.fill();
+    }
 
     if (alaska) {
       context.save();
-      context.translate(0, alaskaOffsetY);
-      context.beginPath();
-      path(alaska);
-      context.fill();
+      context.translate(0, mapGeometry.alaskaOffsetY);
+      if (mapGeometry.alaskaPath) {
+        context.fill(mapGeometry.alaskaPath);
+      } else {
+        context.beginPath();
+        fallbackPath?.(alaska);
+        context.fill();
+      }
       context.restore();
     }
 
-    context.beginPath();
-    path(stateLines);
     context.strokeStyle = "rgba(48, 72, 94, 0.68)";
     context.lineWidth = 0.75 / view.scale;
-    context.stroke();
-
-    const hits: RouteHit[] = [];
-    const projectedAirports = new Map<string, [number, number]>();
-    const activeAirportCodes = new Set(routes.flatMap((route) => [route.origin, route.destination]));
-    const caribbeanBox: InsetBox = compactInsets
-      ? { x: size.width - 171, y: size.height - 88, width: 126, height: 59, label: "CARIBBEAN" }
-      : { x: size.width - 212, y: size.height - 108, width: 160, height: 76, label: "CARIBBEAN" };
-    const pacificBox: InsetBox = compactInsets
-      ? { x: size.width - 108, y: size.height - 182, width: 63, height: 55, label: "PACIFIC" }
-      : { x: size.width - 137, y: size.height - 219, width: 85, height: 67, label: "PACIFIC" };
-    const territoryAirports: Airport[] = [];
-    for (const [code, airport] of airports) {
-      const point = projection([airport.longitude, airport.latitude]);
-      if (point) {
-        projectedAirports.set(code, [
-          point[0],
-          point[1] + (airport.state === "AK" ? alaskaOffsetY : 0),
-        ]);
-      } else if (activeAirportCodes.has(code)) {
-        territoryAirports.push(airport);
-      }
+    if (mapGeometry.stateLinesPath) {
+      context.stroke(mapGeometry.stateLinesPath);
+    } else {
+      context.beginPath();
+      fallbackPath?.(stateLines);
+      context.stroke();
     }
 
-    territoryAirports.sort((a, b) => a.code.localeCompare(b.code));
-    if (territoryAirports.length > 0) {
-      const usedBoxes = new Set<InsetBox>();
-      territoryAirports.forEach((airport, index) => {
-        const box = airport.state === "PR" || airport.state === "VI" ? caribbeanBox : pacificBox;
-        usedBoxes.add(box);
-        projectedAirports.set(
-          airport.code,
-          territoryPosition(airport, caribbeanBox, pacificBox, index),
-        );
-      });
-      for (const box of usedBoxes) {
-        context.fillStyle = "rgba(255, 255, 255, 0.9)";
-        context.strokeStyle = "rgba(54, 78, 101, 0.36)";
-        context.lineWidth = 0.75 / view.scale;
-        context.beginPath();
-        context.roundRect(box.x, box.y, box.width, box.height, 7);
-        context.fill();
-        context.stroke();
-        context.fillStyle = "rgba(43, 64, 84, 0.78)";
-        context.font = `600 ${8 / view.scale}px monospace`;
-        context.textAlign = "left";
-        context.textBaseline = "top";
-        context.fillText(
-          box.label,
-          box.x + 8 / view.scale,
-          box.y + 6 / view.scale,
-        );
-      }
+    for (const box of mapGeometry.usedBoxes) {
+      context.fillStyle = "rgba(255, 255, 255, 0.9)";
+      context.strokeStyle = "rgba(54, 78, 101, 0.36)";
+      context.lineWidth = 0.75 / view.scale;
+      context.beginPath();
+      context.roundRect(box.x, box.y, box.width, box.height, 7);
+      context.fill();
+      context.stroke();
+      context.fillStyle = "rgba(43, 64, 84, 0.78)";
+      context.font = `600 ${8 / view.scale}px monospace`;
+      context.textAlign = "left";
+      context.textBaseline = "top";
+      context.fillText(
+        box.label,
+        box.x + 8 / view.scale,
+        box.y + 6 / view.scale,
+      );
     }
 
-    const sortedRoutes = [...routes].sort((a, b) => {
-      const aImportant = (modeledRouteDelays.get(a.key) ?? 0) > 0 || (recordedRouteDelays.get(a.key) ?? 0) > 0 || a.key === selectedRouteKey;
-      const bImportant = (modeledRouteDelays.get(b.key) ?? 0) > 0 || (recordedRouteDelays.get(b.key) ?? 0) > 0 || b.key === selectedRouteKey;
-      return Number(aImportant) - Number(bImportant) || a.flights - b.flights;
-    });
-
-    for (const route of sortedRoutes) {
-      const origin = projectedAirports.get(route.origin);
-      const destination = projectedAirports.get(route.destination);
-      if (!origin || !destination) continue;
-      const points = routeCurve(origin, destination);
-      const modeledSeverity = getDelaySeverity(modeledRouteDelays.get(route.key));
-      const recordedSeverity = getDelaySeverity(recordedRouteDelays.get(route.key));
+    for (const hit of paintedRoutes) {
+      const { route, modeledSeverity, recordedSeverity, selected } = hit;
       const modeled = modeledSeverity !== "none";
       const recorded = recordedSeverity !== "none";
-      const selected = route.key === selectedRouteKey;
       const isHovered = hoveredRouteKey === route.key;
 
-      context.beginPath();
-      context.moveTo(points[0][0], points[0][1]);
-      for (let index = 1; index < points.length; index += 1) {
-        context.lineTo(points[index][0], points[index][1]);
-      }
       context.strokeStyle = modeled
         ? delayColor(modeledSeverity)
         : selected
@@ -494,132 +745,21 @@ export function NetworkMap({
         : selected || isHovered
           ? 2.1
           : Math.min(1.55, 0.4 + Math.sqrt(route.flights) * 0.16)) / view.scale;
-      context.stroke();
+      strokeRoute(context, hit);
       if (recorded) {
         context.save();
         context.setLineDash([5.5 / view.scale, 4 / view.scale]);
         context.strokeStyle = delayColor(recordedSeverity);
         context.lineWidth = 1.75 / view.scale;
-        context.stroke();
+        strokeRoute(context, hit);
         context.restore();
       }
-      hits.push({ route, points: points.map((point) => screenPoint(point, view)) });
-    }
-
-    const airportDelayMinutes = new Map<string, number>();
-    for (const route of routes) {
-      const routeDelay = Math.max(
-        modeledRouteDelays.get(route.key) ?? 0,
-        recordedRouteDelays.get(route.key) ?? 0,
-      );
-      if (routeDelay <= 0) continue;
-      airportDelayMinutes.set(
-        route.origin,
-        Math.max(airportDelayMinutes.get(route.origin) ?? 0, routeDelay),
-      );
-      airportDelayMinutes.set(
-        route.destination,
-        Math.max(airportDelayMinutes.get(route.destination) ?? 0, routeDelay),
-      );
-    }
-
-    const activeAirports = [...airportTraffic.entries()]
-      .filter(([code]) => projectedAirports.has(code))
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    const maxTraffic = Math.max(1, ...activeAirports.map(([, count]) => count));
-    const markerCandidates: AirportMarker[] = [];
-
-    activeAirports.forEach(([code, count]) => {
-      const airport = airports.get(code);
-      const point = projectedAirports.get(code);
-      if (!airport || !point) return;
-      const delayMinutes = airportDelayMinutes.get(code) ?? 0;
-      const delaySeverity = getDelaySeverity(delayMinutes);
-      const delayed = delaySeverity !== "none";
-      const selected = code === selectedAirportCode;
-      const focused = code === focusedAirportCode;
-      const importance = Math.sqrt(count / maxTraffic);
-      const revealAt = MIN_ZOOM + (1 - importance) * 3.6;
-      const labelAt = Math.min(MAX_ZOOM, revealAt + 0.25);
-      if (!delayed && !selected && !focused && view.scale + 0.001 < revealAt) return;
-
-      const [x, y] = screenPoint(point, view);
-      if (x < -90 || x > size.width + 90 || y < -90 || y > size.height + 90) {
-        return;
-      }
-      markerCandidates.push({
-        airport,
-        traffic: count,
-        x,
-        y,
-        size: 5 + importance * 7,
-        showLabel: delayed || selected || focused || view.scale + 0.001 >= labelAt,
-        delayMinutes,
-        delaySeverity,
-        selected,
-        focused,
-        leaderLength: 0,
-        leaderAngle: 0,
-      });
-    });
-
-    markerCandidates.sort((a, b) =>
-      Number(b.selected) - Number(a.selected)
-      || severityRank(b.delaySeverity) - severityRank(a.delaySeverity)
-      || b.traffic - a.traffic
-      || a.airport.code.localeCompare(b.airport.code));
-    const markers: AirportMarker[] = [];
-    for (const candidate of markerCandidates) {
-      const centerIsAvailable = (x: number, y: number) => {
-        const outsideViewport = x < 23 || x > size.width - 23 || y < 23 || y > size.height - 23;
-        const intersectsControls = x > size.width - 183 && y < 80;
-        const overlapsMarker = markers.some((marker) =>
-          Math.hypot(marker.x - x, marker.y - y) < 46);
-        return !outsideViewport && !intersectsControls && !overlapsMarker;
-      };
-
-      let markerX = candidate.x;
-      let markerY = candidate.y;
-      if (!centerIsAvailable(markerX, markerY)) {
-        const codeSeed = [...candidate.airport.code]
-          .reduce((sum, character) => sum + character.charCodeAt(0), 0);
-        let placed = false;
-        for (let ring = 0; ring < 4 && !placed; ring += 1) {
-          const radius = 48 + ring * 22;
-          const positions = 8 + ring * 4;
-          for (let step = 0; step < positions; step += 1) {
-            const angle = ((codeSeed * 47) % 360) * Math.PI / 180
-              + (step / positions) * Math.PI * 2;
-            const nextX = candidate.x + Math.cos(angle) * radius;
-            const nextY = candidate.y + Math.sin(angle) * radius;
-            if (!centerIsAvailable(nextX, nextY)) continue;
-            markerX = nextX;
-            markerY = nextY;
-            placed = true;
-            break;
-          }
-        }
-        if (!placed) continue;
-      }
-
-      const leaderLength = Math.hypot(candidate.x - markerX, candidate.y - markerY);
-      markers.push({
-        ...candidate,
-        x: markerX,
-        y: markerY,
-        showLabel: candidate.showLabel || leaderLength > 1,
-        leaderLength,
-        leaderAngle: Math.atan2(
-          candidate.y - markerY,
-          candidate.x - markerX,
-        ) * 180 / Math.PI,
-      });
     }
 
     context.restore();
-    hitsRef.current = hits;
-    setVisibleAirportMarkers(markers);
-  }, [airports, airportTraffic, focusedAirportCode, hoveredRouteKey, modeledRouteDelays, recordedRouteDelays, routes, selectedAirportCode, selectedRouteKey, size, view]);
+    hitsRef.current = paintedRoutes;
+    paintedViewRef.current = view;
+  }, [hoveredRouteKey, mapGeometry, paintedRoutes, size.height, size.width, view]);
 
   function updateHoveredRoute(routeKey: string | null) {
     setHoverState((current) => {
@@ -629,14 +769,30 @@ export function NetworkMap({
   }
 
   function locateRoute(x: number, y: number) {
+    const paintedView = paintedViewRef.current;
+    const mapX = (x - paintedView.x) / paintedView.scale;
+    const mapY = (y - paintedView.y) / paintedView.scale;
     let best: RouteHit | null = null;
-    let bestDistance = 9;
+    let bestDistance = 9 / paintedView.scale;
     // Walk from the last painted route to the first so the visible top line
     // wins when routes cross or share part of their geometry.
     for (let hitIndex = hitsRef.current.length - 1; hitIndex >= 0; hitIndex -= 1) {
       const hit = hitsRef.current[hitIndex];
+      if (
+        mapX < hit.bounds.minX - bestDistance
+        || mapX > hit.bounds.maxX + bestDistance
+        || mapY < hit.bounds.minY - bestDistance
+        || mapY > hit.bounds.maxY + bestDistance
+      ) {
+        continue;
+      }
       for (let index = 1; index < hit.points.length; index += 1) {
-        const distance = distanceToSegment(x, y, hit.points[index - 1], hit.points[index]);
+        const distance = distanceToSegment(
+          mapX,
+          mapY,
+          hit.points[index - 1],
+          hit.points[index],
+        );
         if (distance < bestDistance) {
           bestDistance = distance;
           best = hit;
@@ -764,9 +920,12 @@ export function NetworkMap({
       return;
     }
 
-    setPointer((current) => current.x === x && current.y === y ? current : { x, y });
     const overOverlay = (event.target as Element | null)?.closest(".airport-marker, .map-controls");
-    updateHoveredRoute(overOverlay ? null : locateRoute(x, y)?.route.key ?? null);
+    const routeKey = overOverlay ? null : locateRoute(x, y)?.route.key ?? null;
+    if (routeKey !== null || hoveredRouteKey !== null) {
+      setPointer((current) => current.x === x && current.y === y ? current : { x, y });
+    }
+    updateHoveredRoute(routeKey);
   }
 
   function handlePointerEnd(event: React.PointerEvent<HTMLDivElement>) {
