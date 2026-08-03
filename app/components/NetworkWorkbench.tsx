@@ -917,7 +917,7 @@ function AircraftDayTimeline({
               : modelStopped
                 ? "Model stops"
                 : !isLinked
-                  ? "Outside linked rotation"
+                  ? "Not linked to selected flight"
                   : isRecovery
                     ? "Recovered here"
                     : isSelected
@@ -978,7 +978,7 @@ function AircraftDayTimeline({
       </div>
       <p className="method-note aircraft-day-note">
         {rotation.tail
-          ? "All flights shown share the reported tail on this carrier day. Only the linked sequence is used for propagation; rows after a broken link stay visible as context."
+          ? "Every flight shown has the same reported aircraft tail that day. The model carries delay only through flights whose airports and times form a continuous sequence. Later flights that cannot be reliably connected remain visible, but their delay is not modeled."
           : "This flight has no reported aircraft tail, so other legs from its aircraft day cannot be identified."}
       </p>
     </section>
