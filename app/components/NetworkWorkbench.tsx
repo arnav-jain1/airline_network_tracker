@@ -11,10 +11,13 @@ import {
   getActualDelaySeedMinutes,
   getDelaySeverity,
   getRecordedDepartureObservation,
-  linkAdjacentTailFlightsByAirport,
   simulateFlightDelay,
   simulateGroundStop,
 } from "../lib/simulation";
+import {
+  type FlightChunkPayload,
+  inflateFlightChunk,
+} from "../lib/flight-data";
 import {
   type Airport,
   type NetworkRoute,
@@ -56,13 +59,6 @@ type AirportPayload = {
   airports: Array<Airport & { latitude: number | null; longitude: number | null }>;
 };
 
-type ChunkPayload = {
-  date: string;
-  carrier: string;
-  flightFields?: string[];
-  flights: Array<Flight | unknown[]>;
-};
-
 type ScenarioMode = "flight" | "ground";
 type DelaySource = "planned" | "actual";
 
@@ -102,6 +98,22 @@ function formatDate(date: string, compact = false) {
   return value.toLocaleDateString("en-US", compact
     ? { month: "short", day: "numeric", year: "numeric" }
     : { weekday: "short", month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatMonth(month: string) {
+  if (!month) return "";
+  const value = new Date(`${month}-01T12:00:00`);
+  return value.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function formatDay(date: string) {
+  if (!date) return "";
+  const value = new Date(`${date}T12:00:00`);
+  return value.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function formatDatasetRange(dates: readonly string[]) {
@@ -164,18 +176,6 @@ function addMaximumRouteDelay(
   routeDelays.set(routeKey, Math.max(routeDelays.get(routeKey) ?? 0, delayMinutes));
 }
 
-function inflateFlights(payload: ChunkPayload): Flight[] {
-  const flights = payload.flightFields
-    ? payload.flights.map((row) => {
-        if (!Array.isArray(row)) return row;
-        return Object.fromEntries(
-          payload.flightFields!.map((field, index) => [field, row[index]]),
-        ) as unknown as Flight;
-      })
-    : payload.flights as Flight[];
-  return linkAdjacentTailFlightsByAirport(flights);
-}
-
 export function NetworkWorkbench() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [airportPayload, setAirportPayload] = useState<AirportPayload | null>(null);
@@ -210,8 +210,7 @@ export function NetworkWorkbench() {
       .then(([nextManifest, nextAirports]) => {
         setManifest(nextManifest);
         setAirportPayload(nextAirports);
-        const preferredDate = nextManifest.dates[Math.floor(nextManifest.dates.length / 2)]
-          ?? nextManifest.dates[0];
+        const preferredDate = nextManifest.dates.at(-1) ?? nextManifest.dates[0];
         const available = nextManifest.availability[preferredDate] ?? nextManifest.carriers;
         const preferredCarrier = available.includes("AA") ? "AA" : available[0];
         setIsChunkLoading(true);
@@ -230,6 +229,19 @@ export function NetworkWorkbench() {
     return manifest.availability[date] ?? manifest.carriers;
   }, [date, manifest]);
 
+  const dateMonths = useMemo(() => {
+    const grouped = new Map<string, string[]>();
+    for (const availableDate of manifest?.dates ?? []) {
+      const month = availableDate.slice(0, 7);
+      const dates = grouped.get(month) ?? [];
+      dates.push(availableDate);
+      grouped.set(month, dates);
+    }
+    return [...grouped.entries()].map(([month, dates]) => ({ month, dates }));
+  }, [manifest]);
+  const selectedMonth = date.slice(0, 7);
+  const selectedMonthDates = dateMonths.find((entry) => entry.month === selectedMonth)?.dates ?? [];
+
   useEffect(() => {
     if (!manifest || !date || !carrier || !availableCarriers.includes(carrier)) return;
     const controller = new AbortController();
@@ -238,10 +250,10 @@ export function NetworkWorkbench() {
     fetch(publicPath(path), { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`No flights are available for ${carrier} on ${date}.`);
-        return response.json() as Promise<ChunkPayload>;
+        return response.json() as Promise<FlightChunkPayload>;
       })
       .then((payload) => {
-        setFlights(inflateFlights(payload));
+        setFlights(inflateFlightChunk(payload));
         setSelectedRouteKey(null);
         setSelectedFlightId(null);
         setDelayMinutes(60);
@@ -401,6 +413,18 @@ export function NetworkWorkbench() {
     setCarrier(nextCarrier ?? "");
   }
 
+  function changeMonth(nextMonth: string) {
+    const nextDates = dateMonths.find((entry) => entry.month === nextMonth)?.dates ?? [];
+    if (nextDates.length === 0) return;
+    const currentDay = Number(date.slice(8, 10));
+    const nextDate = nextDates.reduce((closest, candidate) => {
+      const candidateDistance = Math.abs(Number(candidate.slice(8, 10)) - currentDay);
+      const closestDistance = Math.abs(Number(closest.slice(8, 10)) - currentDay);
+      return candidateDistance < closestDistance ? candidate : closest;
+    });
+    changeDate(nextDate);
+  }
+
   function changeCarrier(nextCarrier: string) {
     resetForChunkLoad();
     setCarrier(nextCarrier);
@@ -463,16 +487,24 @@ export function NetworkWorkbench() {
           </div>
         </div>
 
-        <div className="dataset-controls" aria-label="Network selection">
-          <div className="control-field">
-            <label htmlFor="network-date">Service date</label>
-            <select id="network-date" value={date} onChange={(event) => changeDate(event.target.value)}>
-              {manifest.dates.map((option) => (
-                <option key={option} value={option}>{formatDate(option, true)}</option>
+        <div className="dataset-controls" role="group" aria-label="Network selection">
+          <div className="control-field control-field-month">
+            <label htmlFor="network-month">Service month</label>
+            <select id="network-month" value={selectedMonth} onChange={(event) => changeMonth(event.target.value)}>
+              {dateMonths.map(({ month }) => (
+                <option key={month} value={month}>{formatMonth(month)}</option>
               ))}
             </select>
           </div>
-          <div className="control-field">
+          <div className="control-field control-field-day">
+            <label htmlFor="network-date">Service day</label>
+            <select id="network-date" value={date} onChange={(event) => changeDate(event.target.value)}>
+              {selectedMonthDates.map((option) => (
+                <option key={option} value={option}>{formatDay(option)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="control-field control-field-carrier">
             <label htmlFor="network-carrier">Operating airline</label>
             <select id="network-carrier" value={carrier} onChange={(event) => changeCarrier(event.target.value)}>
               {availableCarriers.map((option) => (

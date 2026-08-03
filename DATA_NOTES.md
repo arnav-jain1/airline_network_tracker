@@ -17,9 +17,11 @@ The preparation step requires these 16 columns from each on-time export:
 
 `OP_CARRIER` is accepted as an optional fallback carrier field but is not required when `OP_UNIQUE_CARRIER` is present, as in the January export.
 
-The May source header also contains 13 columns that are not retained: `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `ARR_TIME`, `ACTUAL_ELAPSED_TIME`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, and `LATE_AIRCRAFT_DELAY`. The smaller January export includes `ARR_TIME` and `ACTUAL_ELAPSED_TIME`; those remain unused.
+The May source header also contains 13 columns that are not retained: `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `ARR_TIME`, `ACTUAL_ELAPSED_TIME`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, and `LATE_AIRCRAFT_DELAY`. The smaller January through April exports include `ARR_TIME` and `ACTUAL_ELAPSED_TIME`; those remain unused.
 
 Only airports used by an included flight are emitted to `public/data/airports.json`. A flight is omitted if it lacks any of `CRS_DEP_TIME`, `CRS_ARR_TIME`, or `CRS_ELAPSED_TIME`, or if either DOT airport ID cannot be resolved to a three-character code. Exact omission counts and metadata diagnostics are written to `public/data/diagnostics.json` on every run.
+
+The current January through May build includes 2,880,795 of 2,880,796 source rows. The single omission is SkyWest flight 5035 from Denver to Austin on March 13, whose `CRS_ELAPSED_TIME` is blank. Its other values are left untouched in the ignored source export.
 
 The supplied `L_AIRPORT_ID.csv` row for active DOT airport ID `16869` has a blank description. It is explicitly mapped to `XWA` (Williston Basin International); the 2026 records, Denver distance, current `L_AIRPORT.csv`, and coordinate metadata are consistent with that identification. The override is isolated at the top of the preparation script and counted in diagnostics.
 
@@ -31,6 +33,7 @@ The supplied `L_AIRPORT_ID.csv` row for active DOT airport ID `16869` has a blan
 {
   "date": "2026-05-01",
   "carrier": "AA",
+  "flightIdPrefix": "f20260501-",
   "flightFields": [
     "id", "flightNumber", "tail", "origin", "destination",
     "originId", "destinationId", "scheduledDeparture", "scheduledArrival",
@@ -41,7 +44,7 @@ The supplied `L_AIRPORT_ID.csv` row for active DOT airport ID `16869` has a blan
 }
 ```
 
-Each chunk carries a `flightFields` schema and encodes `flights` as positional arrays in that exact order, avoiding repeated property names in hundreds of thousands of records. The schema is `id`, `flightNumber`, `tail`, `origin`, `destination`, `originId`, `destinationId`, `scheduledDeparture`, `scheduledArrival`, `scheduledElapsed`, `distance`, `cancelled`, `diverted`, `actualDepartureDelay`, and `nextFlightId`. The carrier is defined once at chunk level. The stable compact ID combines the service date with the file-local source-row number in base 36. It remains unique across non-overlapping monthly exports and an existing month's IDs do not change when another export is added. Flight numbers remain strings; cancellation and diversion flags are booleans.
+Each chunk carries a `flightFields` schema and encodes `flights` as positional arrays in that exact order, avoiding repeated property names in hundreds of thousands of records. The schema is `id`, `flightNumber`, `tail`, `origin`, `destination`, `originId`, `destinationId`, `scheduledDeparture`, `scheduledArrival`, `scheduledElapsed`, `distance`, `cancelled`, `diverted`, `actualDepartureDelay`, and `nextFlightId`. The carrier and `flightIdPrefix` are each defined once at chunk level. Stored `id` and `nextFlightId` values contain only their base-36 row suffix; the client prepends `flightIdPrefix` while loading the chunk. The resulting stable full ID combines the service date with the file-local source-row number in base 36. It remains unique across non-overlapping monthly exports and an existing month's IDs do not change when another export is added. Flight numbers remain strings; cancellation and diversion flags are booleans.
 
 Clock times are integer minutes after local midnight. BTS `2400` is preserved as `1440`; clients should render it as midnight. Arrival and departure clocks are airport-local and should not be compared across different airports without time-zone information. Elapsed time and departure delay are in minutes; distance is in statute miles.
 

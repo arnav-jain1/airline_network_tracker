@@ -6,8 +6,10 @@ import { createInterface } from "node:readline";
 
 import {
   claimServiceDate,
+  compactFlightId,
   compareSourcePaths,
   createFieldIndexes,
+  createFlightIdPrefix,
   createStableFlightId,
   summarizeDatasetPeriod,
 } from "./prepare-data-helpers.mjs";
@@ -732,10 +734,21 @@ async function main() {
         addRotationLinks(flights, diagnostics);
         const routeCount = countRoutes(flights);
         const relativePath = `/data/days/${date}/${carrier}.json`;
+        const flightIdPrefix = createFlightIdPrefix(date);
         const compactFlights = flights.map((flight) =>
-          FLIGHT_FIELDS.map((field) => flight[field]),
+          FLIGHT_FIELDS.map((field) =>
+            field === "id" || field === "nextFlightId"
+              ? compactFlightId(flight[field], flightIdPrefix)
+              : flight[field],
+          ),
         );
-        const chunk = { date, carrier, flightFields: FLIGHT_FIELDS, flights: compactFlights };
+        const chunk = {
+          date,
+          carrier,
+          flightIdPrefix,
+          flightFields: FLIGHT_FIELDS,
+          flights: compactFlights,
+        };
         await writeFile(
           join(outputDir, "days", date, `${carrier}.json`),
           JSON.stringify(chunk),
@@ -763,7 +776,7 @@ async function main() {
 
     const datasetPeriod = summarizeDatasetPeriod(sortedDates);
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt,
       dataset: {
         sourceFile: sourceFiles.length === 1 ? basename(sourceFiles[0]) : null,

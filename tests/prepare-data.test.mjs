@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   claimServiceDate,
+  compactFlightId,
   compareSourcePaths,
   createFieldIndexes,
+  createFlightIdPrefix,
   createStableFlightId,
   summarizeDatasetPeriod,
 } from "../scripts/prepare-data-helpers.mjs";
@@ -39,6 +41,28 @@ test("additional source files do not change an existing month's flight IDs", () 
   ]);
   assert.equal(createStableFlightId("2026-05-01", 42), mayId);
   assert.notEqual(createStableFlightId("2026-06-01", 42), mayId);
+});
+
+test("carrier-day chunks can store flight IDs without repeating their date prefix", () => {
+  const prefix = createFlightIdPrefix("2026-05-01");
+  const fullId = createStableFlightId("2026-05-01", 42);
+
+  assert.equal(prefix, "f20260501-");
+  assert.equal(fullId, "f20260501-16");
+  assert.equal(compactFlightId(fullId, prefix), "16");
+  assert.equal(compactFlightId(null, prefix), null);
+  assert.throws(
+    () => compactFlightId("f20260430-16", prefix),
+    /does not use expected prefix/,
+  );
+  assert.throws(
+    () => compactFlightId("f20260501-016", prefix),
+    /canonical base-36 suffix/,
+  );
+  assert.throws(
+    () => compactFlightId("f20260501-1A", prefix),
+    /canonical base-36 suffix/,
+  );
 });
 
 test("overlapping service dates in separate exports are rejected", () => {

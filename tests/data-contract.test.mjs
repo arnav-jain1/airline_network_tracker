@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 import {
   compareRecordedReplay,
-  linkAdjacentTailFlightsByAirport,
   simulateFlightDelay,
 } from "../app/lib/simulation.ts";
+import { inflateFlightChunk } from "../app/lib/flight-data.ts";
 
 const publicRoot = new URL("../public/", import.meta.url);
 const dataRoot = new URL("../public/data/", import.meta.url);
@@ -32,40 +32,109 @@ async function readJson(url) {
   return JSON.parse(await readFile(url, "utf8"));
 }
 
-function inflateChunk(chunk) {
-  return chunk.flights.map((row) =>
-    Object.fromEntries(chunk.flightFields.map((field, index) => [field, row[index]])),
-  );
-}
-
 test("manifest indexes every compact day/carrier chunk", async () => {
-  const manifest = await readJson(new URL("manifest.json", dataRoot));
+  const [manifest, diagnostics] = await Promise.all([
+    readJson(new URL("manifest.json", dataRoot)),
+    readJson(new URL("diagnostics.json", dataRoot)),
+  ]);
 
-  assert.equal(manifest.schemaVersion, 1);
-  assert.ok(manifest.dates.length >= 1);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.dates.length, 151);
   assert.deepEqual(manifest.dates, [...new Set(manifest.dates)].sort());
-  for (const includedDate of ["2026-01-01", "2026-01-31", "2026-05-01", "2026-05-31"]) {
+  for (const includedDate of [
+    "2026-01-01", "2026-01-31",
+    "2026-02-01", "2026-02-28",
+    "2026-03-01", "2026-03-31",
+    "2026-04-01", "2026-04-30",
+    "2026-05-01", "2026-05-31",
+  ]) {
     assert.ok(manifest.dates.includes(includedDate), `Missing included date ${includedDate}`);
   }
+  assert.deepEqual(
+    [...manifest.dataset.sourceFiles].sort(),
+    [
+      "T_ONTIME_REPORTING.csv",
+      "T_ONTIME_REPORTING_2026_01.csv",
+      "T_ONTIME_REPORTING_2026_02.csv",
+      "T_ONTIME_REPORTING_2026_03.csv",
+      "T_ONTIME_REPORTING_2026_04.csv",
+    ].sort(),
+  );
   assert.equal(manifest.dataset.startDate ?? manifest.dates[0], manifest.dates[0]);
   assert.equal(
     manifest.dataset.endDate ?? manifest.dates.at(-1),
     manifest.dates.at(-1),
   );
   assert.ok(manifest.carriers.length >= 10);
-  assert.ok(manifest.totals.flights > 1_000_000);
+  assert.ok(manifest.totals.flights > 2_800_000);
   assert.equal(
     manifest.chunks.reduce((sum, chunk) => sum + chunk.flightCount, 0),
     manifest.totals.flights,
   );
   assert.equal(manifest.metadata.airportCodeMatchRate, 1);
   assert.equal(manifest.metadata.coordinateMatchRate, 1);
+  assert.equal(diagnostics.includedFlights, manifest.totals.flights);
+  assert.equal(diagnostics.sourceRows, diagnostics.includedFlights + 1);
+  assert.equal(diagnostics.skippedMissingScheduledFields, 1);
 
   await Promise.all(
     manifest.chunks.map((chunk) => {
       assert.match(chunk.path, /^\/data\/days\/\d{4}-\d{2}-\d{2}\/[A-Z0-9]+\.json$/);
       return access(new URL(`.${chunk.path}`, publicRoot));
     }),
+  );
+
+  const outputFiles = [
+    new URL("manifest.json", dataRoot),
+    new URL("airports.json", dataRoot),
+    new URL("diagnostics.json", dataRoot),
+    ...manifest.chunks.map((chunk) => new URL(`.${chunk.path}`, publicRoot)),
+  ];
+  const outputBytes = (await Promise.all(outputFiles.map((file) => stat(file))))
+    .reduce((sum, file) => sum + file.size, 0);
+  assert.ok(
+    outputBytes < 256 * 1024 * 1024,
+    `Prepared data is ${(outputBytes / 1024 / 1024).toFixed(2)} MiB and exceeds the host limit`,
+  );
+});
+
+test("flight chunk inflation supports compact and legacy IDs", () => {
+  const compact = inflateFlightChunk({
+    date: "2026-05-01",
+    carrier: "AA",
+    flightIdPrefix: "f20260501-",
+    flights: [
+      {
+        id: "16", flightNumber: "1", tail: "N1", origin: "DFW", destination: "ORD",
+        originId: 1, destinationId: 2, scheduledDeparture: 60, scheduledArrival: 180,
+        scheduledElapsed: 120, distance: 800, cancelled: false, diverted: false,
+        nextFlightId: "17",
+      },
+      {
+        id: "17", flightNumber: "2", tail: "N1", origin: "ORD", destination: "DFW",
+        originId: 2, destinationId: 1, scheduledDeparture: 240, scheduledArrival: 360,
+        scheduledElapsed: 120, distance: 800, cancelled: false, diverted: false,
+        nextFlightId: null,
+      },
+    ],
+  });
+  assert.deepEqual(compact.map((flight) => flight.id), ["f20260501-16", "f20260501-17"]);
+  assert.equal(compact[0].nextFlightId, "f20260501-17");
+
+  const legacy = inflateFlightChunk({
+    date: "2026-05-01",
+    carrier: "AA",
+    flights: compact,
+  });
+  assert.deepEqual(legacy.map((flight) => flight.id), ["f20260501-16", "f20260501-17"]);
+  assert.throws(
+    () => inflateFlightChunk({
+      date: "2026-05-01",
+      carrier: "AA",
+      flightIdPrefix: "f20260430-",
+      flights: [],
+    }),
+    /does not match chunk date/,
   );
 });
 
@@ -83,8 +152,11 @@ test("a representative chunk inflates into valid rotations and simulations", asy
   assert.deepEqual(chunk.flightFields, expectedFields);
   assert.ok(chunk.flights.length > 2_000);
   assert.ok(chunk.flights.every((row) => row.length === expectedFields.length));
+  assert.equal(chunk.flightIdPrefix, `f${chunk.date.replaceAll("-", "")}-`);
+  assert.ok(chunk.flights.every((row) => !String(row[0]).startsWith(chunk.flightIdPrefix)));
 
-  const flights = linkAdjacentTailFlightsByAirport(inflateChunk(chunk));
+  const flights = inflateFlightChunk(chunk);
+  assert.ok(flights.every((flight) => flight.id.startsWith(chunk.flightIdPrefix)));
   const byId = new Map(flights.map((flight) => [flight.id, flight]));
   const airports = new Map(airportPayload.airports.map((airport) => [airport.code, airport]));
   const linked = flights.filter((flight) => flight.nextFlightId);

@@ -161,10 +161,11 @@ canvas:focus-visible {
 }
 
 .dataset-controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(132px, 0.9fr) minmax(112px, 0.75fr) minmax(182px, 1.25fr);
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 0;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 13px;
@@ -175,7 +176,7 @@ canvas:focus-visible {
 .control-field {
   position: relative;
   display: grid;
-  min-width: 160px;
+  min-width: 0;
   gap: 2px;
   padding: 4px 10px;
 }
@@ -1692,7 +1693,6 @@ canvas:focus-visible {
 
   .control-field {
     min-width: 0;
-    flex: 1;
   }
 
   .workspace {
@@ -1723,6 +1723,7 @@ canvas:focus-visible {
 
   .dataset-controls {
     gap: 0;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .control-field {
@@ -1732,6 +1733,12 @@ canvas:focus-visible {
 
   .control-field::after {
     right: 6px;
+  }
+
+  .control-field-carrier {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+    border-left: 0 !important;
   }
 
   .map-heading {

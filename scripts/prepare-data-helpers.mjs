@@ -25,8 +25,25 @@ export function compareSourcePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+export function createFlightIdPrefix(date) {
+  return `f${date.replaceAll("-", "")}-`;
+}
+
 export function createStableFlightId(date, sourceRowNumber) {
-  return `f${date.replaceAll("-", "")}-${sourceRowNumber.toString(36)}`;
+  return `${createFlightIdPrefix(date)}${sourceRowNumber.toString(36)}`;
+}
+
+export function compactFlightId(flightId, prefix) {
+  if (flightId == null) return flightId;
+  if (!flightId.startsWith(prefix)) {
+    throw new Error(`Flight ID ${flightId} does not use expected prefix ${prefix}`);
+  }
+  const suffix = flightId.slice(prefix.length);
+  const sourceRowNumber = Number.parseInt(suffix, 36);
+  if (!/^[0-9a-z]+$/.test(suffix) || sourceRowNumber.toString(36) !== suffix) {
+    throw new Error(`Flight ID ${flightId} does not use a canonical base-36 suffix`);
+  }
+  return suffix;
 }
 
 export function claimServiceDate(sourceFileByDate, date, sourceFile) {
