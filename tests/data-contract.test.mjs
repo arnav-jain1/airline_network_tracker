@@ -44,13 +44,16 @@ test("manifest indexes every compact day/carrier chunk", async () => {
   assert.equal(manifest.schemaVersion, 1);
   assert.ok(manifest.dates.length >= 1);
   assert.deepEqual(manifest.dates, [...new Set(manifest.dates)].sort());
+  for (const includedDate of ["2026-01-01", "2026-01-31", "2026-05-01", "2026-05-31"]) {
+    assert.ok(manifest.dates.includes(includedDate), `Missing included date ${includedDate}`);
+  }
   assert.equal(manifest.dataset.startDate ?? manifest.dates[0], manifest.dates[0]);
   assert.equal(
     manifest.dataset.endDate ?? manifest.dates.at(-1),
     manifest.dates.at(-1),
   );
   assert.ok(manifest.carriers.length >= 10);
-  assert.ok(manifest.totals.flights > 500_000);
+  assert.ok(manifest.totals.flights > 1_000_000);
   assert.equal(
     manifest.chunks.reduce((sum, chunk) => sum + chunk.flightCount, 0),
     manifest.totals.flights,

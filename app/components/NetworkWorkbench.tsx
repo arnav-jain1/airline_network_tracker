@@ -499,7 +499,6 @@ export function NetworkWorkbench() {
             </div>
             <div className="map-legend" aria-label="Map legend">
               <span className="legend-item"><i className="legend-line" />Scheduled</span>
-              <span className="legend-item"><i className="legend-line selected" />Selected</span>
               <span className="legend-item"><i className="legend-line delay-moderate" />Delay &lt;45m</span>
               <span className="legend-item"><i className="legend-line delay-severe" />Delay 45m+</span>
               {recordedReplay && <span className="legend-item"><i className="legend-line recorded" />Recorded = dashed</span>}

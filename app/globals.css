@@ -311,10 +311,6 @@ canvas:focus-visible {
   background: var(--blue);
 }
 
-.legend-line.selected {
-  background: var(--amber);
-}
-
 .legend-line.delay-moderate,
 .legend-line.delay-severe {
   height: 3px;

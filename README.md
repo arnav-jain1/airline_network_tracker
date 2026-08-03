@@ -10,9 +10,11 @@ The source files live in the ignored `work/` directory. Run:
 npm run data:prepare
 ```
 
-This streams every `T_ONTIME_REPORTING*.csv` file in `work/`, joins DOT airport IDs to codes and public airport coordinates, validates same-day tail rotations, and writes compact date/carrier chunks under `public/data/`. Add monthly BTS exports as separate files with the same selected columns; no manual merge is required. See `DATA_NOTES.md` for the exact schema, join rules, diagnostics, and assumptions.
+This streams every `T_ONTIME_REPORTING*.csv` file in `work/`, joins DOT airport IDs to codes and public airport coordinates, validates same-day tail rotations, and writes compact date/carrier chunks under `public/data/`. Add monthly BTS exports as separate files with the same required columns; `OP_CARRIER` may be omitted when `OP_UNIQUE_CARRIER` is present. No manual merge is required. Overlapping service dates are rejected. See `DATA_NOTES.md` for the exact schema, join rules, diagnostics, and assumptions.
 
-The included May 2026 output contains 611,735 flights across 31 dates and 13 operating carriers. No source flight rows were omitted during preparation.
+The included January and May 2026 output contains 1,155,738 flights across 62 dates and 13 operating carriers. All 544,003 January rows and all 611,735 May rows passed preparation; no source flight rows were omitted.
+
+February through April are ready to add as `work/T_ONTIME_REPORTING_2026_02.csv`, `..._03.csv`, and `..._04.csv`. Each file should contain one non-overlapping month and the 16 required columns listed in `DATA_NOTES.md`.
 
 ## Model scope
 
@@ -41,3 +43,7 @@ npm test
 The repository includes a GitHub Actions workflow that builds a static export and deploys `dist/client` to GitHub Pages whenever `main` is pushed. It automatically configures the repository subpath for project sites, so application bundles, the social image, and all flight-data requests work below `/<repository-name>/`.
 
 In the repository's **Settings > Pages**, choose **GitHub Actions** as the source. The workflow can also be started manually from the Actions tab.
+
+To verify the static site locally in Firefox, Chrome, Edge, or another browser, double-click `OPEN_LOCAL_SITE.bat`. It builds the same static site, opens `http://127.0.0.1:4173/` in the default browser, and keeps a tiny local file server running while the window is open. You can also run `npm run build:static` followed by `npm run preview:static`.
+
+Do not double-click `dist/client/index.html` directly. Modern browsers block module and JSON loading from `file://`; serving the otherwise static files over localhost avoids that browser security restriction and matches how GitHub Pages delivers them.

@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import {
   claimServiceDate,
   compareSourcePaths,
+  createFieldIndexes,
   createStableFlightId,
   summarizeDatasetPeriod,
 } from "./prepare-data-helpers.mjs";
@@ -29,7 +30,6 @@ const SOURCE_FIELDS = [
   "DAY_OF_MONTH",
   "FL_DATE",
   "OP_UNIQUE_CARRIER",
-  "OP_CARRIER",
   "TAIL_NUM",
   "OP_CARRIER_FL_NUM",
   "ORIGIN_AIRPORT_ID",
@@ -101,7 +101,12 @@ function parseCsvRecord(line, lineNumber, filePath) {
   return values;
 }
 
-async function forEachCsvRow(filePath, requiredFields, onRow) {
+async function forEachCsvRow(
+  filePath,
+  requiredFields,
+  onRow,
+  optionalFields = [],
+) {
   const input = createReadStream(filePath, { encoding: "utf8" });
   const lines = createInterface({ input, crlfDelay: Infinity });
   let headers = null;
@@ -118,14 +123,11 @@ async function forEachCsvRow(filePath, requiredFields, onRow) {
 
     if (headers === null) {
       headers = values.map((header) => header.trim());
-      fieldIndexes = Object.fromEntries(
-        requiredFields.map((field) => {
-          const index = headers.indexOf(field);
-          if (index === -1) {
-            throw new Error(`${basename(filePath)} is missing required field ${field}`);
-          }
-          return [field, index];
-        }),
+      fieldIndexes = createFieldIndexes(
+        headers,
+        requiredFields,
+        optionalFields,
+        filePath,
       );
       continue;
     }
@@ -580,8 +582,10 @@ async function main() {
 
         claimServiceDate(sourceFileByDate, date, sourceFile);
 
-        const carrier =
-          nullableString(values[indexes.OP_UNIQUE_CARRIER]) ?? nullableString(values[indexes.OP_CARRIER]);
+        const carrier = nullableString(values[indexes.OP_UNIQUE_CARRIER])
+          ?? (indexes.OP_CARRIER === undefined
+            ? null
+            : nullableString(values[indexes.OP_CARRIER]));
         if (carrier === null) {
           diagnostics.skippedMissingCarrier += 1;
           return;
@@ -696,7 +700,7 @@ async function main() {
         if (!stream.write(`${JSON.stringify(flight)}\n`)) {
           await once(stream, "drain");
         }
-      });
+      }, ["OP_CARRIER"]);
     }
 
     await endStreams(dateStreams);

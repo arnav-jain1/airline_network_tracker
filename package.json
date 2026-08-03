@@ -8,6 +8,9 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:static": "node scripts/build-static.mjs",
+    "preview:static": "node scripts/serve-static.mjs",
+    "preview:static:open": "node scripts/serve-static.mjs --open",
     "start": "vinext start",
     "test": "npm run build && node --test tests/simulation.test.mjs tests/data-contract.test.mjs tests/prepare-data.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

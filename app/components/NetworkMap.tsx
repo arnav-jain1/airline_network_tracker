@@ -372,7 +372,7 @@ export function NetworkMap({
     );
     const geographyPath = geoPath(projection);
     const compactInsets = size.width < 620;
-    const alaskaOffsetY = -Math.min(50, Math.round(projection.scale() * 0.05));
+    const alaskaOffsetY = compactInsets ? -18 : -24;
     const [projectionX, projectionY] = projection.translate();
     const alaskaProjection = geoAlbersUsa()
       .scale(projection.scale())

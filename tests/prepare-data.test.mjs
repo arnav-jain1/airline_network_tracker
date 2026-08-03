@@ -4,9 +4,27 @@ import test from "node:test";
 import {
   claimServiceDate,
   compareSourcePaths,
+  createFieldIndexes,
   createStableFlightId,
   summarizeDatasetPeriod,
 } from "../scripts/prepare-data-helpers.mjs";
+
+test("source headers accept OP_CARRIER as an optional fallback", () => {
+  const headers = ["YEAR", "OP_UNIQUE_CARRIER"];
+  assert.deepEqual(
+    createFieldIndexes(
+      headers,
+      ["YEAR", "OP_UNIQUE_CARRIER"],
+      ["OP_CARRIER"],
+      "Jan.csv",
+    ),
+    { YEAR: 0, OP_UNIQUE_CARRIER: 1 },
+  );
+  assert.throws(
+    () => createFieldIndexes(headers, ["YEAR", "TAIL_NUM"], [], "Jan.csv"),
+    /Jan\.csv is missing required field TAIL_NUM/,
+  );
+});
 
 test("additional source files do not change an existing month's flight IDs", () => {
   const mayId = createStableFlightId("2026-05-01", 42);

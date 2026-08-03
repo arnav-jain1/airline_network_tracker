@@ -1,5 +1,26 @@
 import { basename } from "node:path";
 
+export function createFieldIndexes(
+  headers,
+  requiredFields,
+  optionalFields = [],
+  sourceName = "CSV source",
+) {
+  const indexes = {};
+  for (const field of requiredFields) {
+    const index = headers.indexOf(field);
+    if (index === -1) {
+      throw new Error(`${basename(sourceName)} is missing required field ${field}`);
+    }
+    indexes[field] = index;
+  }
+  for (const field of optionalFields) {
+    const index = headers.indexOf(field);
+    if (index !== -1) indexes[field] = index;
+  }
+  return indexes;
+}
+
 export function compareSourcePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }

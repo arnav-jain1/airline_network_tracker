@@ -11,11 +11,13 @@ Run `npm run data:prepare` to regenerate the browser-ready files in `public/data
 
 ## Selected BTS columns
 
-The preparation step reads 17 columns from each on-time export:
+The preparation step requires these 16 columns from each on-time export:
 
-`YEAR`, `MONTH`, `DAY_OF_MONTH`, `FL_DATE`, `OP_UNIQUE_CARRIER`, `OP_CARRIER`, `TAIL_NUM`, `OP_CARRIER_FL_NUM`, `ORIGIN_AIRPORT_ID`, `DEST_AIRPORT_ID`, `CRS_DEP_TIME`, `DEP_TIME`, `CRS_ARR_TIME`, `CANCELLED`, `DIVERTED`, `CRS_ELAPSED_TIME`, and `DISTANCE`.
+`YEAR`, `MONTH`, `DAY_OF_MONTH`, `FL_DATE`, `OP_UNIQUE_CARRIER`, `TAIL_NUM`, `OP_CARRIER_FL_NUM`, `ORIGIN_AIRPORT_ID`, `DEST_AIRPORT_ID`, `CRS_DEP_TIME`, `DEP_TIME`, `CRS_ARR_TIME`, `CANCELLED`, `DIVERTED`, `CRS_ELAPSED_TIME`, and `DISTANCE`.
 
-The current source header also contains 13 columns that are not retained: `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `ARR_TIME`, `ACTUAL_ELAPSED_TIME`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, and `LATE_AIRCRAFT_DELAY`.
+`OP_CARRIER` is accepted as an optional fallback carrier field but is not required when `OP_UNIQUE_CARRIER` is present, as in the January export.
+
+The May source header also contains 13 columns that are not retained: `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `ARR_TIME`, `ACTUAL_ELAPSED_TIME`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, and `LATE_AIRCRAFT_DELAY`. The smaller January export includes `ARR_TIME` and `ACTUAL_ELAPSED_TIME`; those remain unused.
 
 Only airports used by an included flight are emitted to `public/data/airports.json`. A flight is omitted if it lacks any of `CRS_DEP_TIME`, `CRS_ARR_TIME`, or `CRS_ELAPSED_TIME`, or if either DOT airport ID cannot be resolved to a three-character code. Exact omission counts and metadata diagnostics are written to `public/data/diagnostics.json` on every run.
 
